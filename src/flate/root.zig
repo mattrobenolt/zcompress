@@ -31,5 +31,6 @@ test {
     _ = Writer;
     _ = Reader;
     _ = @import("golden.zig");
+    _ = @import("fuzz.zig");
     std.testing.refAllDecls(@This());
 }
