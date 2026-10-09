@@ -792,3 +792,70 @@ Decisions deferred to the API sketch; each labeled with its recommendation.
    Same family, one rank down: T5 — the table's stated ranges are narrower
    than its own arithmetic (284 + extra 31 = 258), and the references
    compute unclamped, so range-clamping is also a legal-input rejection.
+
+## 8. std cross-check — stealables and divergences (2026-10-10)
+
+A deliberate pass over `std/compress/flate/` (Compress.zig, Decompress.zig,
+token.zig) against this module, after the fast level landed. Everything below
+cites the std source at the 0.16.0 store path.
+
+### Already ahead (nothing to take)
+
+- Huffman decode: this module's 9-bit primary lookup table + per-symbol chain
+  is the libdeflate shape; std `Decompress.decodeSymbol` peeks 15 bits and
+  walks a linked structure per symbol (`Decompress.zig:405`+). Ours is
+  constant-time for <= 9-bit codes.
+- The stored fallback handles blocks *with* matches (the source bytes live in
+  the Writer buffer, history + block); std stores only no-match blocks,
+  because a sliding window may have dropped the original bytes
+  (`Compress.zig:946`: "This is not done with matches since the original
+  input would need to be stored since the window may slid").
+- The fixed tables are comptime-verified (a compile error on any
+  inconsistency); std builds them the same way at comptime (token.zig
+  `fixed_lit`/`fixed_dist`) — cross-checked symbol-for-symbol by the encoder
+  lane's test.
+
+### Steal for the ratio mode (dynamic Huffman)
+
+- The block-type decision, closed-form from frequencies (`Compress.zig:880`
+  `writeBlock`): `lit_freqs`/`dist_freqs` accumulate *during* matching (free,
+  `Compress.zig:240-261`), then `dynamic_bitsize`, `fixed_bitsize`, and
+  `stored_bitsize` are each computed exactly from the frequencies *before*
+  anything is emitted, and the smallest wins. No trial emission.
+- `huffman.build` (`Compress.zig:1102`): the package-length-limited Huffman
+  construction — a min-heap over packed `{depth, freq}` u32 nodes
+  (`Node.smaller` packs freq as more-significant than depth). In-tree Zig
+  project code (MIT): port with attribution in THIRD_PARTY.md.
+- The level presets (`Compress.zig:286-294`): `good/nice/lazy/chain` per
+  level 1-9 — the tuning table for `Level.@"N"` when the numeric levels get
+  real behavior.
+- `PackedOptionalU15` (`Compress.zig:20-42`): value + null bit in a u16 —
+  the chain-table entry for 32768 positions with a null sentinel.
+
+### Steal for the perf lane (the queued items have std's reference designs)
+
+- The persistent Lookup (`Compress.zig:66-80`): `head` (hash -> newest
+  position), `chain` (per-position backwards links), `chain_pos` with the
+  wraparound identity `chain_pos -% chain_index = history_index`. The table
+  persists across blocks — no per-block zeroing or priming (the ~160
+  KiB/block traffic item). The wraparound arithmetic removes any need to
+  shift stored positions.
+- The BitWriter writes *through* the output (`Compress.zig:86-121`):
+  `writableSliceGreedy(8)` on the output, one `mem.writeInt(u64, ...)` per
+  write, `advance` by whole bytes, the remainder carried in `buffered`/
+  `buffered_n`. No intermediate stack scratch and no scratch-to-output
+  copy — also the design answer to the full-block-write-copy item.
+
+### Steal for M3 (containers)
+
+- `hasher: flate.Container.Hasher` (`Compress.zig:69`): std hashes bytes as
+  they enter the history buffer — the container checksum never gets a
+  separate pass. When gzip/zlib wrap this module, hashing at the Writer's
+  accept/drain boundary (bytes as they enter the history) is the zero-pass
+  option.
+
+### Known, not taken
+
+- `byteAlignBlocks` (`Compress.zig:130`): aligning to a byte boundary with
+  empty 10-bit fixed blocks instead of padding bits — a stored-path
+  nicety; the padding-bits alignment here is equally valid and simpler.
