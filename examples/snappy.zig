@@ -29,27 +29,12 @@ pub fn main(init: std.process.Init) !u8 {
 
 fn encode(arena: Allocator, in: *Io.Reader, out: *Io.Writer) !void {
     _ = arena;
-    var buf: snappy.Writer.Buffer = undefined;
-    var w: snappy.Writer = .init(out, &buf);
-    while (true) {
-        _ = in.stream(&w.writer, .unlimited) catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => |e| return e,
-        };
-    }
-    try w.finish();
+    _ = try snappy.Writer.streamAll(in, out);
 }
 
 fn decode(arena: Allocator, in: *Io.Reader, out: *Io.Writer) !void {
     _ = arena;
-    var buf: snappy.Reader.Buffer = undefined;
-    var r: snappy.Reader = .init(in, &buf);
-    while (true) {
-        _ = r.reader.stream(out, .unlimited) catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => |e| return e,
-        };
-    }
+    _ = try snappy.Reader.streamAll(in, out);
 }
 
 test "example: streaming round-trip" {

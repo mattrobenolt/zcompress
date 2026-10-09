@@ -442,3 +442,19 @@ fn roundTrip(src: []const u8) !void {
     try testing.expectEqual(src.len, plain.written().len);
     try testing.expectEqualSlices(u8, src, plain.written());
 }
+
+/// Stream everything from `r` through one snappy `Reader` into `w`,
+/// returning the decoded bytes served. Consumes `r` exactly through the
+/// stream's end. The reader and its buffer live on this stack frame; zero
+/// allocation.
+pub fn streamAll(r: *Io.Reader, w: *Io.Writer) error{ ReadFailed, WriteFailed }!usize {
+    var n: usize = 0;
+    var buf: Buffer = undefined;
+    var rr: Reader = .init(r, &buf);
+    while (true) {
+        n += rr.reader.stream(w, .unlimited) catch |err| switch (err) {
+            error.EndOfStream => return n,
+            else => return @errorCast(err),
+        };
+    }
+}
