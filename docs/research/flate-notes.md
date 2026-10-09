@@ -485,12 +485,12 @@ layer's tests, attribution in `THIRD_PARTY.md`); the `deflateTests` rows as
 decode goldens; the 9 `.in`/`.golden` pairs as binary fixtures; the corpus
 texts `e.txt` and `Isaac.Newton-Opticks.txt`, plus `Mark.Twain-Tom.Sawyer.txt`
 — **note: the task brief named it under flate's `testdata/`, but Go removed
-it from `src/compress/testdata/` (today: `e.txt`, `gettysburg.txt`,
-`pi.txt`); it lives on in klauspost/compress `testdata/` (BSD-3-Clause), which
-is the vendoring source.** The `.expect` family: optionally, as extra valid
-decoder inputs. The task brief's "`.Z`-derived inputs" does not correspond to
-anything in the current suite — there are no `.Z` files; the `.in`/`.golden`
-family above is what exists (recorded, not guessed at).
+it from `src/compress/testdata/`; the same file lives on in klauspost/compress
+`testdata/` (BSD-3-Clause), which is the vendoring source.** The `.expect`
+family: optionally, as extra valid decoder inputs. The task brief's "`.Z`-
+derived inputs" does not correspond to anything in the existing suite — there
+are no `.Z` files; the `.in`/`.golden` family above is what exists (recorded,
+not guessed at).
 
 ### 4.2 RFC 1951's own examples
 

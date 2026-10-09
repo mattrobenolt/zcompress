@@ -634,5 +634,9 @@ pub fn streamAll(
     if (options.level == .ratio) return error.ReadFailed;
     var buf: Buffer = undefined;
     var ww: Writer = .init(w, &buf, options);
-    return r.streamRemaining(&ww.writer);
+    const n = try r.streamRemaining(&ww.writer);
+    // The stream is not done until finish: the final partial block and the
+    // `03 00` ending are load-bearing (README, "Divergences" T4).
+    try ww.finish();
+    return n;
 }

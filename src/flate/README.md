@@ -19,9 +19,10 @@ This module is raw deflate only, deliberately:
   header and end at BFINAL.
 - **No preset dictionaries.** Deferred (OQ6), not designed; nothing here
   precludes a dictionary entry point later.
-- **No ratio mode yet.** The fast level emits fixed-Huffman blocks (OQ1);
-  dynamic Huffman with cross-block table reuse is a later ratio mode. One
-  mode, one function.
+- **No ratio mode.** The fast level emits fixed-Huffman blocks (OQ1);
+  dynamic Huffman with cross-block table reuse is the planned ratio mode
+  (flate-notes.md §6). `.ratio` in `Level` selects `error.Unimplemented` —
+  no silent aliasing. One mode, one function on the surface.
 - **No canonical compressed form.** Deflate mandates none: two compliant
   encoders may emit different bytes for the same input, so reference encoder
   goldens do not port (same rationale as snappy's README).
@@ -36,49 +37,44 @@ container inside flate, so the one-shot layer here is an addition.
 
 ## API
 
+The public surface is four namespaces — everything else composes through
+them: `flate.encode` (block encoding), `flate.decode` (block decoding),
+`flate.Writer` (streaming encode), `flate.Reader` (streaming decode).
+
 ```zig
 const flate = @import("flate");
 
-// Worst-case compressed size — size `target` to this before `compress`.
-flate.maxCompressedLength(input_len: usize) usize
+// The block encoder (flate.encode):
+flate.encode.max_block_size      // 65535, the stored-block LEN cap (§3.2.4);
+                                  // compress splits input at it; the streaming
+                                  // Writer emits blocks at it.
+flate.encode.history_len          // 32768, the format's backward reach
+                                  // (RFC 1951 §3.2.5); the finder's window
+                                  // is history_len followed by the block.
+flate.encode.maxCompressedLength(input_len) usize
+                                  // size `target` to this before compress.
+flate.encode.Level                // enum { fast, ratio, @"0", @"1".."@"9" }:
+                                  //   fast   — the tuned default; fixed-Huffman
+                                  //   ratio  — dynamic Huffman; unimplemented,
+                                  //            selects error.Unimplemented
+                                  //   @"0"   — stored blocks only
+                                  //   @"1".."@"9" — numeric levels; they all
+                                  //            tune to fast until more tuned
+                                  //            modes exist (stated, not hidden).
+flate.encode.Options              // struct { level: Level = .fast }.
+                                  // .{} is the default: the fast level.
+flate.encode.compress(source, target, options)
+    error{BufferTooSmall, Unimplemented}!usize
 
-// Compress `source` as one raw deflate stream into `target`. Returns bytes
-// written; `error.BufferTooSmall` when `target` is too small — size it via
-// `maxCompressedLength`. Zero heap allocation.
-flate.compress(source: []const u8, target: []u8) error{BufferTooSmall}!usize
-
-// Decompress one raw deflate stream from `source` into `target`, which is a
-// cap: returns the decoded length, or `error.BufferTooSmall`. Zero heap
-// allocation. There is no decompressed-length helper — a raw deflate stream
-// declares no decoded length anywhere.
-flate.decompress(source: []const u8, target: []u8) DecompressError!usize
-
-// The encoder's block size: 65535, the stored-block LEN cap
-// (RFC 1951 §3.2.4). `compress` splits at it; the streaming Writer emits
-// blocks at it.
-flate.max_block_size: usize
-
-// The format's maximum backward match reach: 32768 (RFC 1951 §3.2.5).
-flate.history_len: usize
-
-// Streaming: a compressing Io.Writer over a raw deflate stream.
-var w: flate.Writer = .init(output, &wbuf);   // wbuf: flate.Writer.Buffer
-try w.writer.writeAll(bytes);                 // through the Io.Writer interface
-try w.finish();
-
-// Streaming: a decompressing Io.Reader over a raw deflate stream.
-var r: flate.Reader = .init(input, &rbuf);    // rbuf: flate.Reader.Buffer
-// consume through &r.reader (stream, read-family, peek-family)
-
-// Caller-owned buffer types, exact pointers at init:
-//   flate.Reader.Buffer = [2 * history_len]u8               — 64 KiB window
-//   flate.Writer.Buffer = [max_block_size + history_len]u8  — 98303 bytes
-
-// Every decode failure, in detail (OQ5). `decompress` returns this set;
-// `Reader` records the specific failure in `err` and reports the coarse
-// `error.ReadFailed` through the interface.
-pub const DecompressError = error{
-    BufferTooSmall,             // decompress only: `target` cannot hold the output
+// The block decoder (flate.decode):
+flate.decode.decompress(source, target) DecompressError!usize
+                                  // `target` is a cap; returns the decoded
+                                  // length, or `error.BufferTooSmall` before
+                                  // the overflow. No decoded-length helper:
+                                  // a raw deflate stream declares no decoded
+                                  // length anywhere.
+flate.decode.DecompressError = error{
+    BufferTooSmall,             // decompress only: `target` cannot hold output
     Truncated,                  // input ended before the final block completed
     InvalidBlockType,           // BTYPE = 11 (§3.2.3)
     WrongStoredBlockNlen,       // NLEN != one's complement of LEN (§3.2.4)
@@ -90,10 +86,29 @@ pub const DecompressError = error{
     InvalidMatch,               // a distance before the start of the output (§3.2.3)
 };
 
-// `Reader.err`'s type (flate.Reader.Error): the set above minus
-// `BufferTooSmall` (the Reader owns its buffer), plus the interface's
-// `ReadFailed` and `EndOfStream`.
+// The streaming Io layer: Writer.Buffer / Reader.Buffer are caller-provided
+// buffer types (exact pointers at init). Writer.init takes options; the
+// streaming Reader does not (decode options are input-shaped, not user-set).
+var w: flate.Writer = .init(out, &wbuf, .{}); // wbuf: flate.Writer.Buffer
+try w.writer.writeAll(bytes);                  // through the Io.Writer interface
+try w.finish();
+var r: flate.Reader = .init(in, &rbuf);        // rbuf: flate.Reader.Buffer
+// consume through &r.reader; flate.Reader.Error (= the DecompressError
+// set minus BufferTooSmall — the Reader owns its window — plus StreamTooLong /
+// ReadFailed / EndOfStream) records the specific failure beside the
+// interface's coarse ReadFailed / EndOfStream.
+
+// The one-call conveniences: stack-buffered end-to-end, zero allocation.
+// Writer.streamAll takes options; `.ratio` lands as error.ReadFailed upfront.
+// Reader.streamAll has only the codec side.
+flate.Writer.streamAll(in, out, options) error{ReadFailed, WriteFailed}!usize
+flate.Reader.streamAll(in, out) error{ReadFailed, WriteFailed}!usize
 ```
+
+Caller-owned buffer types (exact pointers at init):
+
+- `flate.Reader.Buffer = [2 * history_len]u8`               — 64 KiB window.
+- `flate.Writer.Buffer = [max_block_size + history_len]u8`  — 98303 bytes.
 
 Contracts, stated plainly:
 
@@ -435,10 +450,12 @@ Semantics:
 
 Files (the intended layout; the implementation lanes may split further):
 `root.zig` (public surface), `encode.zig` (fixed-Huffman encoder and match
-finder), `decode.zig` (inflate and the bit reader), `huffman.zig` (canonical
-code construction, shared by both), `golden.zig` (ported golden fixtures,
-shared by every layer's tests), `Writer.zig` + `Reader.zig` (the streaming
-`Io` layer), `bench.zig` (local benchmark), `fuzz.zig` (fuzz targets).
+finder), `decode.zig` (inflate, bit reader, and the canonical Huffman
+table construction shared by both sides), `golden.zig` (ported golden
+fixtures, shared by every layer's tests), `Writer.zig` + `Reader.zig` (the
+streaming `Io` layer), `bench.zig` (local benchmark), `oracle.zig` (the
+external-oracle harness behind `just flate-oracle`), `fuzz.zig` (fuzz
+targets).
 
 The example CLI (`examples/flate.zig`, `zig build example-flate -- encode
 README.md > out`) is a thin streaming pump over this surface, the same shape
@@ -454,9 +471,6 @@ a fleet run directory and a results file under `docs/results/`, with the
 competitor set the plan pins for this family — klauspost/compress and
 std.compress always, plus the strongest native libraries on the box
 (libdeflate and zlib-ng).
-
-No numbers yet: this README precedes the implementation. Local reference
-numbers land here once the encoder and decoder exist.
 
 ## Testing & golden vectors
 

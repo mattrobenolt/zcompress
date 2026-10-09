@@ -8,14 +8,24 @@ it before you change a kernel or make a performance claim.
 ## Layout
 
 - `src/root.zig`: the umbrella module. One pub decl per codec.
-- `src/snappy/`: raw-block snappy, the first codec, with fastmem wired into
-  its copy paths. `encode.zig` ports the klauspost
-  encoder algorithm (THIRD_PARTY.md); `decode.zig` is original, with golden
-  vectors in `golden.zig` (ported golang/snappy fixtures, shared by every
-layer's tests); `Writer.zig` + `Reader.zig` are the streaming
-  `Io` layer (a compressing `Io.Writer` and a decompressing `Io.Reader` over
-  the framed stream — see `src/snappy/README.md`, "Streaming"); `bench.zig`
-  is the local benchmark.
+- `src/snappy/`: raw-block snappy, with fastmem wired into its copy paths.
+  `encode.zig` ports the klauspost encoder algorithm (THIRD_PARTY.md);
+  `decode.zig` is original, with golden vectors in `golden.zig` (ported
+  golang/snappy fixtures, shared by every layer's tests); `Writer.zig` +
+  `Reader.zig` are the streaming `Io` layer (a compressing `Io.Writer` and a
+  decompressing `Io.Reader` over the framed stream — see
+  `src/snappy/README.md`, "Streaming"); `bench.zig` is the local benchmark;
+  `fuzz.zig` ships fuzz targets; `common.zig` (LEB128 varint) is a shared
+  helper. One-call pumps: `Writer.streamAll`, `Reader.streamAll`.
+- `src/flate/`: raw deflate (RFC 1951). `encode.zig` ports the klauspost
+  level-1 match-finder (THIRD_PARTY.md); `decode.zig` carries inflate, the
+  bit reader, and the canonical Huffman-table construction shared by both
+  sides; `Writer.zig` + `Reader.zig` are the streaming `Io` layer over raw
+  deflate (BFINAL self-delimits; there is no in-package framing — see
+  `src/flate/README.md`, "Streaming"); `golden.zig` shares the Go flate
+  fixtures across every layer's tests; `bench.zig` is the local benchmark;
+  `oracle.zig` is the external-oracle harness behind `just flate-oracle`.
+  Fuzz targets land in `fuzz.zig` (fuzz-engineer lane).
 - `docs/research/specs/`: vendored specs (RFC 1950/1951/1952, RFC 8878, the
   snappy format description) with provenance.
 - `examples/`: one CLI per codec, thin streaming pumps (`encode`/`decode`)
@@ -36,14 +46,25 @@ layer's tests); `Writer.zig` + `Reader.zig` are the streaming
 ## Commands
 
 - `just test`: unit tests for every codec, under the ztest plain-text runner.
-  Must pass before a commit. `-Dfuzz` switches to the default runner for
-  `--fuzz` runs.
-- `just lint`: ziglint over the `.ziglint.zon` paths and `zig fmt --check`.
-  Run it before you call Zig work done.
-- `just bench`: local benchmarks (zig-benchmark). Local numbers are never
-  quoted as claims.
-- `just example snappy encode README.md > /tmp/out`: run a codec's example
-  CLI (`zig build example-snappy -- encode ...`).
+  Must pass before a commit.
+- `just fuzz [BUDGET]`: per-target fuzz over `--fuzz=<budget>` iterations
+  (default 10M). ReleaseSafe only (Debug fuzz hits ziglang/zig#30655).
+- `just lint`: ziglint over `.ziglint.zon` paths, `zig fmt --check` over
+  `src/` and `build.zig`, and `uvx ruff`/`uvx ty` over `scripts/`. Run it
+  before you call Zig work done.
+- `just fmt`: apply `zig fmt` to `src/` and `build.zig`.
+- `just check-baseline`: cross-target `zig build check` covering every
+  portable target (freestanding targets excluded — the ztest runner needs an
+  OS).
+- `just flate-oracle`: external-oracle conformance for flate — `python3
+  zlib` raw, both directions (catches bit-packing bugs invisible to a
+  self-round-trip; the layer is `scripts/flate_oracle.py`).
+- `just bench [ARGS]`: local benchmarks (zig-benchmark). Local numbers are
+  never quoted as claims.
+- `just example <codec> ...`: run a codec's example CLI (e.g. `just example
+  snappy encode README.md > /tmp/out` runs `zig build example-snappy --
+  encode README.md`).
+- `just clean`: drop `zig-out/`, `.zig-cache/`, `zig-pkg/`.
 
 ## Dependencies
 

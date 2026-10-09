@@ -258,3 +258,8 @@ variants; vendor those spec sections at M6).
 - s2 extensions: after M6, only if wanted.
 - Shared `internal/` primitives: the first candidate lands when flate needs a
   second user of a snappy shape.
+- flate dynamic-Huffman ratio mode (OQ1): after the fast path wins —
+  `Level.ratio` reserves the seat with `error.Unimplemented`, never silent
+  aliasing.
+- flate preset dictionaries (OQ6): deferred; the decoder surface does not
+  preclude a dictionary entry point later.

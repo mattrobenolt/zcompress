@@ -828,10 +828,10 @@ test "compress: the stored-only level emits stored blocks" {
     var comp: [64]u8 = undefined;
     const n = try compress("hello, flate!", &comp, .{ .level = .@"0" });
     // 1 header byte (BFINAL=0, BTYPE=00, pad — our ending carries BFINAL,
-    // README T4) + LEN/NLEN (4) + 12 data + the 03 00 ending (2) = 19. zlib's
-    // level 0 sets BFINAL on the stored block instead (18) — both are valid
-    // streams; ours shares the single T4 ending with every other level.
-    try testing.expectEqual(@as(usize, 19), n);
+    // README T4) + LEN/NLEN (4) + 13 data + the 03 00 ending (2) = 20.
+    // zlib's level 0 sets BFINAL on the stored block instead (19) — both
+    // are valid streams; ours shares the single T4 ending with every level.
+    try testing.expectEqual(@as(usize, 20), n);
     var decoded: [16]u8 = undefined;
     const dn = try decode.decompress(comp[0..n], &decoded);
     try testing.expectEqualSlices(u8, "hello, flate!", decoded[0..dn]);

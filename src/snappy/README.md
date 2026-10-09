@@ -132,7 +132,8 @@ Semantics:
 Files: `root.zig` (public surface), `encode.zig` (match-finder),
 `decode.zig` (SIMD decoder), `golden.zig` (ported golden fixtures, shared by
 every layer's tests), `Writer.zig` + `Reader.zig` (streaming `Io` layer),
-`common.zig` (LEB128 varint), `bench.zig` (local benchmark).
+`common.zig` (LEB128 varint), `bench.zig` (local benchmark), `fuzz.zig`
+(fuzz targets).
 
 An example CLI (`examples/snappy.zig`, `zig build example-snappy -- encode
 README.md > out`) exercises the streaming surface end-to-end as a thin pump:

@@ -396,5 +396,9 @@ fn countBlocks(stream: []const u8) usize {
 pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!usize {
     var buf: Buffer = undefined;
     var ww: Writer = .init(w, &buf);
-    return r.streamRemaining(&ww.writer);
+    const n = try r.streamRemaining(&ww.writer);
+    // The stream is not done until finish: the final partial block and the
+    // framing's end are load-bearing (README, "Streaming").
+    try ww.finish();
+    return n;
 }
