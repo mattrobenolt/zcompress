@@ -57,12 +57,12 @@ test "example: streaming round-trip" {
     defer compressed.deinit();
 
     var in: Io.Reader = .fixed("hello hello hello, streaming snappy round-trip");
-    try encode(undefined, &in, &compressed.writer);
+    try encode(testing.allocator, &in, &compressed.writer);
 
     var plain: Io.Writer.Allocating = .init(testing.allocator);
     defer plain.deinit();
     var z: Io.Reader = .fixed(compressed.written());
-    try decode(undefined, &z, &plain.writer);
+    try decode(testing.allocator, &z, &plain.writer);
 
     try testing.expectEqualStrings("hello hello hello, streaming snappy round-trip", plain.written());
 }
