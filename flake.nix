@@ -38,11 +38,14 @@
               ziglint
               zigdoc
               just
-              python3
               uv
               goperf
               pv
             ];
+            env = {
+              UV_PYTHON = "${pkgs.python314}/bin/python3";
+              UV_PYTHON_DOWNLOADS = "never";
+            };
           };
         };
     };
