@@ -23,8 +23,12 @@
 //! T4).
 //!
 //! Zero heap allocation: the finder table is a comptime-sized `[1 << 15]u32`
-//! stack local (128 KiB), zeroed through `fastmem.set` (a `@splat` lowers to
-//! the scalar compiler-rt memset on aarch64 — the snappy encoder's 3x lesson).
+//! (128 KiB) stack local or Writer field, zeroed once per stream through
+//! `fastmem.set` (a `@splat` lowers to the scalar compiler-rt memset on
+//! aarch64 — the snappy encoder's 3x lesson). Entries are absolute stream
+//! positions (wrapping u32), so the table persists across a stream's blocks
+//! — a stale entry fails the distance cap — and each block pays only a
+//! strided priming pass over its history, not a re-zero of the table.
 //!
 //! Format: docs/research/specs/rfc1951-deflate.txt
 //! Lineage: klauspost/compress `flate/level1.go` (`fastEncL1`) and
@@ -64,6 +68,22 @@ pub fn maxCompressedLength(input_len: usize) usize {
 /// comptime-sized stack scratch (README, "Stack").
 const table_bits = 15;
 const table_size = 1 << table_bits;
+
+/// The match-finder table. An entry is the *absolute* stream position
+/// (wrapping u32) of the newest scanned position with that hash; a stale
+/// entry fails `matchCandidate`'s distance cap, so a table persists across a
+/// stream's blocks with no per-block zeroing — std's persistent Lookup
+/// (flate-notes.md §8, `Compress.zig:66-80`). Callers zero it once per
+/// stream (`fastmem.set`) and prime each block's history at
+/// `stream_prime_stride`.
+pub const FinderTable = [table_size]u32;
+
+/// History priming density for the streaming/one-shot block sequence: every
+/// `stream_prime_stride`-th history position is hashed so a match may reach
+/// across the block boundary (`§3.2.3`). Backward extension recovers a
+/// repeat from any covered position inside it, so a stride above 1 keeps the
+/// long matches while dividing the priming pass's cost.
+const stream_prime_stride: usize = 1;
 
 /// The klauspost-lineage 5-byte hash multiplier — the flate L1 sibling of the
 /// snappy encoder's `prime6bytes` (flate-notes.md §5.1).
@@ -306,22 +326,33 @@ pub const BitWriter = struct {
     }
 };
 
-/// The candidate's absolute position when the table entry is a legal match
-/// source with the 4 bytes at `s_rel`, or null. A legal source sits before `s`
-/// (a distance of at least 1) and within `history_len` (`§3.2.5`); the
-/// zero-initialized table's entry 0 is window_start, which the distance cap
-/// rejects until it is genuinely in range.
+/// The candidate's index in `source` when the table entry is a legal match
+/// source with the 4 bytes at `s_index`, or null. Entries are absolute
+/// stream positions (wrapping u32, `base`-relative to `source[0]`; the
+/// caller passes `s_absolute = base +% s_index`). A legal source sits before
+/// `s` (a distance of at least 1), within `history_len` (`§3.2.5`), and not
+/// before the window's front. The wrapping subtraction makes a stale entry
+/// — one the window slid past, or a zero-initialized slot — fail the
+/// distance cap; a wrapped-around entry (a stream past 4 GiB) still lands
+/// in-window, where the 4-byte confirm decides. Either way no candidate
+/// outside the window is ever emitted.
 inline fn matchCandidate(
     source: []const u8,
-    window_start: usize,
-    s_rel: usize,
+    s_index: usize,
+    s_absolute: u32,
     entry: u32,
     expect: u32,
+    comptime windowed: bool,
 ) ?usize {
-    const candidate_rel = @as(usize, entry);
-    if (candidate_rel >= s_rel) return null;
-    if (s_rel - candidate_rel > history_len) return null;
-    const candidate = window_start + candidate_rel;
+    const distance = s_absolute -% entry;
+    // One unsigned check rejects both 0 (wrapping to max) and every distance
+    // past the cap (`§3.2.5`).
+    if (distance -% 1 >= history_len) return null;
+    // A windowed caller (the streaming Writer) drops bytes from the front, so
+    // an entry can name a position no longer in `source`; the one-shot paths
+    // never drop, and every entry is a position the scan already passed.
+    if (windowed and distance > s_index) return null;
+    const candidate = s_index - distance;
     if (load32(source, candidate) != expect) return null; // the 4-byte confirm
     return candidate;
 }
@@ -429,19 +460,22 @@ pub fn emitStoredBlock(w: *BitWriter, block: []const u8) error{BufferTooSmall}!v
     w.pos += block.len;
 }
 
-/// Hash the block's history into the table so a match may reach across the
-/// block boundary (`§3.2.3`). The table is block-scoped and rebuilt from the
-/// window (README, "Encoder"); the 8-byte load reads a few bytes past the
+/// Hash the block's history into the table, every `stride` positions, so a
+/// match may reach across the block boundary (`§3.2.3`). Entries are
+/// absolute stream positions (`base` is the stream position of `source[0]`),
+/// matching the scan's stores. The 8-byte load reads a few bytes past the
 /// hashed 5, so the loop stops where that load would leave `source`.
 fn primeTable(
     source: []const u8,
     window_start: usize,
     block_start: usize,
-    table: *[table_size]u32,
+    table: *FinderTable,
+    base: u32,
+    comptime stride: usize,
 ) void {
     var pos = window_start;
-    while (pos < block_start and pos + 8 <= source.len) : (pos += 1) {
-        table[hash5(load64(source, pos))] = @intCast(pos - window_start);
+    while (pos < block_start and pos + 8 <= source.len) : (pos += stride) {
+        table[hash5(load64(source, pos))] = base +% @as(u32, @truncate(pos));
     }
 }
 
@@ -453,11 +487,21 @@ fn primeTable(
 /// per step, confirm 4 bytes, extend backwards over the literals already
 /// scanned and forwards to the block's end, and accelerate the skip as the
 /// distance since the last emit grows.
+///
+/// `table` is the caller's (see `FinderTable`): the streaming Writer and the
+/// one-shot `compress` persist one table across the stream's blocks, so the
+/// per-block cost is the history prime alone, never a 128-KiB re-zero; `base`
+/// is the absolute stream position of `source[0]`. `compressBlock` (the pub
+/// block-at-a-time entry) passes a fresh, densely primed table.
 fn encodeFixedBlock(
     source: []const u8,
     block_start: usize,
     block_end: usize,
     w: *BitWriter,
+    table: *FinderTable,
+    base: u32,
+    comptime prime_stride: usize,
+    comptime windowed: bool,
 ) error{BufferTooSmall}!bool {
     const block_len = block_end - block_start;
     // §3.2.4 — the stored alternative's payload is 32 + 8 x len bits; a block
@@ -467,18 +511,19 @@ fn encodeFixedBlock(
     const payload_limit: u64 = @as(u64, block_len) * 8 + 32;
     var payload: u64 = fixed_literal_codes[256].len;
 
-    // The finder's window: this block's history followed by the block itself.
-    // Table positions are relative to the window start, so they never grow
-    // with the input. Zeroing goes through fastmem: `@splat` lowers to the
-    // scalar compiler-rt memset on aarch64, which cost the snappy encoder 3x.
+    // The finder's window: this block's history followed by the block itself,
+    // so matches cross block boundaries exactly as the format allows
+    // (`§3.2.3`). A block too small to scan needs no priming either: its
+    // bytes are all literals, and its own history range is primed afresh by
+    // the next scanning block.
     const window_start = block_start - @min(block_start, history_len);
-    var table: [table_size]u32 = undefined;
-    fastmem.set(u32, &table, 0);
-    primeTable(source, window_start, block_start, &table);
 
     var next_emit = block_start;
     var s = block_start;
     if (block_len >= min_match_block_size) {
+        if (prime_stride != 0) {
+            primeTable(source, window_start, block_start, table, base, prime_stride);
+        }
         // Stop scanning this far from the end so the 8-byte loads and the
         // 3-position cascade stay in bounds; the tail becomes literals.
         const s_limit = block_end - input_margin;
@@ -488,26 +533,28 @@ fn encodeFixedBlock(
             var candidate: usize = 0;
             // Inner scan: three hash slots per step until a 4-byte confirm.
             inner: while (true) {
+                const s_absolute = base +% @as(u32, @truncate(s));
                 const h0 = hash5(cv);
                 const h1 = hash5(cv >> 8);
                 const h2 = hash5(cv >> 16);
                 const e0 = table[h0];
-                table[h0] = @intCast(s - window_start);
+                table[h0] = s_absolute;
                 const e1 = table[h1];
-                table[h1] = @intCast(s + 1 - window_start);
+                table[h1] = s_absolute +% 1;
                 const e2 = table[h2];
-                table[h2] = @intCast(s + 2 - window_start);
+                table[h2] = s_absolute +% 2;
 
-                if (matchCandidate(source, window_start, s - window_start, e0, @truncate(cv))) |c| {
+                if (matchCandidate(source, s, s_absolute, e0, @truncate(cv), windowed)) |c| {
                     candidate = c;
                     break :inner;
                 }
                 const hit1 = matchCandidate(
                     source,
-                    window_start,
-                    s + 1 - window_start,
+                    s + 1,
+                    s_absolute +% 1,
                     e1,
                     @truncate(cv >> 8),
+                    windowed,
                 );
                 if (hit1) |c| {
                     candidate = c;
@@ -516,10 +563,11 @@ fn encodeFixedBlock(
                 }
                 const hit2 = matchCandidate(
                     source,
-                    window_start,
-                    s + 2 - window_start,
+                    s + 2,
+                    s_absolute +% 2,
                     e2,
                     @truncate(cv >> 16),
+                    windowed,
                 );
                 if (hit2) |c| {
                     candidate = c;
@@ -592,6 +640,56 @@ pub fn compressBlock(
     block_end: usize,
     w: *BitWriter,
 ) error{BufferTooSmall}!void {
+    // The block-scoped table, zeroed through fastmem: `@splat` lowers to the
+    // scalar compiler-rt memset on aarch64, which cost the snappy encoder 3x.
+    // The streaming Writer and `compress` carry a persistent table instead
+    // (see `FinderTable`); this entry point keeps a fresh, densely primed
+    // table per call.
+    var table: FinderTable = undefined;
+    fastmem.set(u32, &table, 0);
+    try compressBlockStateful(source, block_start, block_end, w, &table, 0, 1, false);
+}
+
+/// The streaming Writer's block encode: the shared block path over the
+/// Writer's persistent table (zeroed once per stream), with the stream's
+/// priming stride. `base` is the absolute stream position of `source[0]` —
+/// the Writer's window base.
+pub fn compressBlockStream(
+    source: []const u8,
+    block_start: usize,
+    block_end: usize,
+    w: *BitWriter,
+    table: *FinderTable,
+    base: u32,
+) error{BufferTooSmall}!void {
+    try compressBlockStateful(
+        source,
+        block_start,
+        block_end,
+        w,
+        table,
+        base,
+        stream_prime_stride,
+        true,
+    );
+}
+
+/// The block-at-a-time encode over a caller-managed finder table: the shared
+/// internal entry behind `compressBlock` (fresh table, dense prime), the
+/// one-shot `compress`, and the streaming Writer (persistent table,
+/// `stream_prime_stride`). `base` is the absolute stream position of
+/// `source[0]`; entries older than the window fail the distance cap, so the
+/// table needs no clearing between blocks.
+fn compressBlockStateful(
+    source: []const u8,
+    block_start: usize,
+    block_end: usize,
+    w: *BitWriter,
+    table: *FinderTable,
+    base: u32,
+    comptime prime_stride: usize,
+    comptime windowed: bool,
+) error{BufferTooSmall}!void {
     const start = w.snapshot();
 
     // §3.2.3 — BFINAL is clear on every data block: the stream ends with a
@@ -600,7 +698,16 @@ pub fn compressBlock(
     try w.writeBits(0, 1);
     try w.writeBits(1, 2);
 
-    if (!try encodeFixedBlock(source, block_start, block_end, w)) {
+    if (!try encodeFixedBlock(
+        source,
+        block_start,
+        block_end,
+        w,
+        table,
+        base,
+        prime_stride,
+        windowed,
+    )) {
         // The fixed payload did not beat the stored form: rewind the block's
         // bits and store it. Storing fits wherever the fixed attempt did —
         // `maxCompressedLength` reserves 5 bytes per block plus the ending.
@@ -662,13 +769,28 @@ pub fn compress(
 
     var w: BitWriter = .{ .target = target };
 
+    // One finder table for the whole stream, zeroed once (`FinderTable`):
+    // entries are absolute source positions, so the per-block cost is the
+    // strided history prime alone.
+    var table: FinderTable = undefined;
+    fastmem.set(u32, &table, 0);
+
     var block_start: usize = 0;
     while (block_start < source.len) {
         const block_end = @min(block_start + max_block_size, source.len);
         if (stored_only) {
             try emitStoredBlock(&w, source[block_start..block_end]);
         } else {
-            try compressBlock(source, block_start, block_end, &w);
+            try compressBlockStateful(
+                source,
+                block_start,
+                block_end,
+                &w,
+                &table,
+                0,
+                stream_prime_stride,
+                false,
+            );
         }
         block_start = block_end;
     }
@@ -915,6 +1037,37 @@ test "compress: round trips across block boundaries" {
             };
         }
     }
+}
+
+test "compressBlock: the block-at-a-time entry round trips" {
+    // The pub block entry keeps its own fresh, densely primed table; three
+    // blocks of a repeated phrase exercise its cross-block history window,
+    // and the stream decodes exactly.
+    const allocator = testing.allocator;
+    const phrase = "the quick brown fox jumps over the lazy dog. ";
+    const input = try allocator.alloc(u8, 3 * max_block_size);
+    defer allocator.free(input);
+    for (0..input.len / phrase.len) |i| {
+        fastmem.copy(u8, input[i * phrase.len ..][0..phrase.len], phrase);
+    }
+
+    const comp = try allocator.alloc(u8, maxCompressedLength(input.len));
+    defer allocator.free(comp);
+    var w: BitWriter = .{ .target = comp };
+    var block_start: usize = 0;
+    while (block_start < input.len) {
+        const block_end = @min(block_start + max_block_size, input.len);
+        try compressBlock(input, block_start, block_end, &w);
+        block_start = block_end;
+    }
+    try writeFinalEmptyBlock(&w);
+    try w.finish();
+
+    const back = try allocator.alloc(u8, input.len);
+    defer allocator.free(back);
+    const n = try decode.decompress(comp[0..w.pos], back);
+    try testing.expectEqual(input.len, n);
+    try testing.expectEqualSlices(u8, input, back);
 }
 
 test "compress: many blocks round trip (1 MiB)" {

@@ -472,6 +472,16 @@ competitor set the plan pins for this family — klauspost/compress and
 std.compress always, plus the strongest native libraries on the box
 (libdeflate and zlib-ng).
 
+Rows: `BenchmarkCompress`/`BenchmarkDecompress` (the one-shot block path at
+32 KiB and 64 KiB per shape) and `BenchmarkRatio` (compressed/uncompressed
+per shape, untimed). A streaming bench row was tried and reverted: the
+compiled streaming-row code bulk in the bench binary perturbs the one-shot
+rows' numbers ~3x (placement and machine state exonerated, filtered runs
+clean — the effect is code layout, unprofiled on this box). Streaming
+direction comes from the example pump (`just example flate
+encode|decode <file>`) over a multi-hundred-MiB corpus, which times the
+same path with real file sinks and no bench-binary interference.
+
 ## Testing & golden vectors
 
 The conformance bar is the reference suites, ported as fixtures and shared

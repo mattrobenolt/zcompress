@@ -5,9 +5,10 @@
 //! front is the retained match history and whose remainder is the
 //! accumulation block. As the block fills, `drain` emits whole
 //! `max_block_size` blocks through the encoder's per-block path
-//! (`encode.compressBlock`, the same one the one-shot `compress` uses); the
-//! compressed-output scratch and the finder table are comptime-sized stack
-//! locals, so the full encode path allocates nothing.
+//! (`encode.compressBlockStream`, the streaming half of the shared block
+//! encoder the one-shot `compress` uses); the compressed-output scratch is a
+//! comptime-sized stack local and the finder table a Writer field, so the
+//! full encode path allocates nothing.
 //!
 //! History reaches back across emitted blocks (`§3.2.3`): a block's finder
 //! window is the retained 32-KiB tail of the previously emitted bytes
@@ -59,6 +60,18 @@ options: encode.Options,
 /// history, `buffer[block_start..]` the accumulating block. The embedded
 /// `Io.Writer`'s own `buffer`/`end` are the block region alone.
 buffer: *Buffer,
+/// The match-finder table, persistent across the stream's blocks
+/// (`encode.FinderTable`): entries are absolute stream positions, so a block
+/// pays a strided priming pass over its history, never a 128-KiB re-zero.
+/// Zeroed lazily on the first compressed block — a stored-only stream never
+/// pays for it at all.
+table: encode.FinderTable = undefined,
+/// Whether `table` has been zeroed this stream.
+table_ready: bool = false,
+/// The absolute stream position of `buffer[0]` (wrapping u32, matching the
+/// table entries): `compact` advances it by the bytes it drops from the
+/// window's front.
+window_base: u32 = 0,
 /// Where the buffered block begins — the history length, since the history
 /// is exactly the bytes before the block.
 block_start: usize = 0,
@@ -136,8 +149,18 @@ fn emitBlock(w: *Writer, emit_len: usize) Io.Writer.Error!void {
     if (w.options.level == .@"0") {
         encode.emitStoredBlock(&bw, w.buffer[w.block_start..block_end]) catch unreachable;
     } else {
-        encode.compressBlock(w.buffer[0..block_end], w.block_start, block_end, &bw) catch
-            unreachable;
+        if (!w.table_ready) {
+            fastmem.set(u32, &w.table, 0);
+            w.table_ready = true;
+        }
+        encode.compressBlockStream(
+            w.buffer[0..block_end],
+            w.block_start,
+            block_end,
+            &bw,
+            &w.table,
+            w.window_base,
+        ) catch unreachable;
     }
     w.bits = bw.bits;
     w.bit_count = bw.bit_count;
@@ -158,6 +181,9 @@ fn compact(w: *Writer) void {
     const keep = @min(w.block_start, history_len);
     fastmem.move(u8, w.buffer[0..keep], w.buffer[w.block_start - keep ..][0..keep]);
     fastmem.move(u8, w.buffer[keep..][0..block_len], w.buffer[w.block_start..][0..block_len]);
+    // The dropped front bytes advance the window's absolute base, keeping
+    // the persistent table's stream positions honest.
+    w.window_base +%= @as(u32, @truncate(w.block_start - keep));
     w.block_start = keep;
 }
 

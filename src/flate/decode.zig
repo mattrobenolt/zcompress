@@ -235,8 +235,15 @@ pub fn HuffmanDecoder(
             next: u16,
         };
 
-        lookup: [table_size]u16 = @splat(invalid),
-        chain: [alphabet_size]Chain = @splat(.{ .wire = 0, .len = 0, .next = chain_end }),
+        // Undefined until `build`: construction is always followed by `build`
+        // (the fixed tables at comptime, dynamic tables per block), and `build`
+        // rewrites `lookup` in full. `chain` entries for symbols with code
+        // length 0 are never read — `decode` chases only symbols a build
+        // linked into a chain head. An `@splat` default here would be a second
+        // full fill per build, through the scalar compiler-rt memset on
+        // aarch64 (the snappy encoder's 3x lesson, encode.zig).
+        lookup: [table_size]u16 = undefined,
+        chain: [alphabet_size]Chain = undefined,
 
         /// Build the table from `lens` (code length per symbol, in symbol
         /// order; 0 = "does not occur", `§3.2.7`). `error.Oversubscribed
@@ -246,7 +253,15 @@ pub fn HuffmanDecoder(
             assert(lens.len <= alphabet_size);
             assert(kind != .literal_length or lens.len > 256);
             try checkLengths(kind, lens);
-            self.lookup = @splat(invalid);
+            // fastmem over `@splat`: the splat lowers to the scalar
+            // compiler-rt memset on aarch64, while `invalid` (0xFFFF, all
+            // bytes equal) dispatches to the vectorized byte kernel. The
+            // comptime branch serves the fixed tables, built at comptime.
+            if (@inComptime()) {
+                self.lookup = @splat(invalid);
+            } else {
+                fastmem.set(u16, &self.lookup, invalid);
+            }
 
             var count: [max_bits + 1]u16 = @splat(0);
             for (lens) |len| {
@@ -261,7 +276,14 @@ pub fn HuffmanDecoder(
                 next_code[bits] = code;
             }
 
-            var chain_heads: [table_size]u16 = @splat(chain_end);
+            var chain_heads: [table_size]u16 = undefined;
+            // `chain_end` is 0xFFFF: all bytes equal, the vectorized fill
+            // (the comptime branch is the fixed tables again).
+            if (@inComptime()) {
+                chain_heads = @splat(chain_end);
+            } else {
+                fastmem.set(u16, &chain_heads, chain_end);
+            }
             for (lens, 0..) |len, symbol| {
                 if (len == 0) continue;
                 const wire = wireBits(next_code[len], len);
