@@ -21,11 +21,15 @@ const std = @import("std");
 const assert = std.debug.assert;
 const testing = std.testing;
 const mem = std.mem;
+const DefaultPrng = std.Random.DefaultPrng;
+
 const fastmem = @import("fastmem");
 
 const common = @import("common.zig");
 const uvarintSize = common.uvarintSize;
 const writeUvarint = common.writeUvarint;
+const readInt = common.readInt;
+const writeInt = common.writeInt;
 const decode = @import("decode.zig");
 
 /// Worst-case compressed size for a raw snappy block of `input_len` bytes:
@@ -80,26 +84,6 @@ inline fn load64(b: []const u8, i: usize) u64 {
 /// Load 4 bytes from `b[i..]` as a little-endian u32.
 inline fn load32(b: []const u8, i: usize) u32 {
     return readInt(u32, b[i..][0..4]);
-}
-
-/// Reads an integer from memory with bit count specified by T.
-/// The bit count of T must be evenly divisible by 8.
-/// This function cannot fail and cannot cause undefined behavior.
-/// Forces little-endianness.
-inline fn readInt(comptime T: type, buffer: *const [@divExact(@typeInfo(T).int.bits, 8)]u8) T {
-    return mem.readInt(T, buffer, .little);
-}
-
-/// Writes an integer to memory, storing it in twos-complement.
-/// This function always succeeds, has defined behavior for all inputs, but
-/// the integer bit width must be divisible by 8.
-/// Forces little-endianness.
-inline fn writeInt(
-    comptime T: type,
-    buffer: *[@divExact(@typeInfo(T).int.bits, 8)]u8,
-    value: T,
-) void {
-    return mem.writeInt(T, buffer, value, .little);
 }
 
 /// Number of leading matching bytes of `a` and `b`, compared 8 bytes at a time,
@@ -461,7 +445,7 @@ test "encode: incompressible input bails to a single literal" {
     // Random bytes shouldn't compress; the encoder emits one literal and the
     // output is slightly larger than the input (tag + length overhead).
     var input: [4096]u8 = undefined;
-    var rng = std.Random.DefaultPrng.init(0xDEADBEEF);
+    var rng: DefaultPrng = .init(0xDEADBEEF);
     for (&input) |*b| b.* = rng.random().int(u8);
     const bound = maxCompressedLength(input.len);
     const comp = try testing.allocator.alloc(u8, bound);
@@ -474,7 +458,7 @@ test "encode: incompressible input bails to a single literal" {
 
 test "encode: 64K boundary round-trips" {
     var input: [65536]u8 = undefined;
-    var rng = std.Random.DefaultPrng.init(0xCAFEBABE);
+    var rng: DefaultPrng = .init(0xCAFEBABE);
     for (&input, 0..) |*b, i| b.* = @truncate(rng.random().int(u8) ^ @as(u8, @truncate(i)));
     const bound = maxCompressedLength(input.len);
     const comp = try testing.allocator.alloc(u8, bound);

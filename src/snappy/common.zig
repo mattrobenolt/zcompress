@@ -1,6 +1,8 @@
 //! Shared helpers for the snappy block codec: the LEB128 varint used for the
 //! uncompressed-length prefix.
 
+const mem = @import("std").mem;
+
 /// Number of bytes to encode `value` as an unsigned LEB128 varint.
 pub fn uvarintSize(value: usize) usize {
     if (value == 0) return 1;
@@ -39,4 +41,24 @@ pub fn readUvarint(input: []const u8, pos: *usize) error{DecompressionFailed}!us
         if (byte & 0x80 == 0) return result;
     }
     return error.DecompressionFailed; // varint too long (> 5 bytes)
+}
+
+/// Reads an integer from memory with bit count specified by T.
+/// The bit count of T must be evenly divisible by 8.
+/// This function cannot fail and cannot cause undefined behavior.
+/// Forces little-endianness.
+pub inline fn readInt(comptime T: type, buffer: *const [@divExact(@typeInfo(T).int.bits, 8)]u8) T {
+    return mem.readInt(T, buffer, .little);
+}
+
+/// Writes an integer to memory, storing it in twos-complement.
+/// This function always succeeds, has defined behavior for all inputs, but
+/// the integer bit width must be divisible by 8.
+/// Forces little-endianness.
+pub inline fn writeInt(
+    comptime T: type,
+    buffer: *[@divExact(@typeInfo(T).int.bits, 8)]u8,
+    value: T,
+) void {
+    return mem.writeInt(T, buffer, value, .little);
 }

@@ -27,8 +27,11 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const testing = std.testing;
+const Target = std.Target;
+const print = std.debug.print;
 const builtin = @import("builtin");
 const native_arch = builtin.target.cpu.arch;
+
 const fastmem = @import("fastmem");
 
 const common = @import("common.zig");
@@ -111,7 +114,7 @@ inline fn shuffleBytes(v: Vec16, mask: Vec16) Vec16 {
             // `v` is read and written, then return it.
             // Gate on SSSE3: pshufb requires SSSE3, not just x86_64. Baseline
             // x86_64 (no SSSE3) falls through to the portable byte permute.
-            if (comptime std.Target.x86.featureSetHas(builtin.cpu.features, .ssse3)) {
+            if (comptime Target.x86.featureSetHas(builtin.cpu.features, .ssse3)) {
                 var out = v;
                 asm volatile ("pshufb %[mask], %[out]"
                     : [out] "+x" (out),
@@ -666,7 +669,7 @@ test "golden decode: golang/snappy TestDecode vector table" {
     var d_buf: [100]u8 = undefined;
     for (cases) |tc| {
         checkDecodeCase(&d_buf, tc) catch |err| {
-            std.debug.print("\nFAIL: {s}\n", .{tc.desc});
+            print("\nFAIL: {s}\n", .{tc.desc});
             return err;
         };
     }
@@ -759,7 +762,7 @@ test "golden decode: literal + copy2 + literal (golang TestDecodeLengthOffset)" 
                 for (&got_buf, 0..) |*b, j| b.* = overrun_base +
                     @as(u8, @intCast(j % overrun_len));
                 const n = decompressBlock(input, got_buf[0..total_len]) catch |err| {
-                    std.debug.print("\nFAIL length={d} offset={d} suffixLen={d}: {s}\n", .{
+                    print("\nFAIL length={d} offset={d} suffixLen={d}: {s}\n", .{
                         length, offset, suffix_len, @errorName(err),
                     });
                     return err;
