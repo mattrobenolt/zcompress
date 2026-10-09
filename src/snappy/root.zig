@@ -1,46 +1,23 @@
-//! Standalone Snappy block codec. Imports only
-//! `std` and `fastmem`. Exposed as its own build module (`snappy`) and
-//! re-exported by the zcompress umbrella module: a hash-table match-finder
-//! encoder, a SIMD-accelerated decoder, and a streaming `Io` layer
-//! (`Reader`/`Writer`) over the package's framed stream format. Block
-//! functions over caller-owned buffers, zero heap allocation.
+//! Standalone Snappy block codec. Imports only `std` and `fastmem`.
 //!
-//! Format: docs/research/specs/snappy-format-description.txt
-//! (upstream: https://github.com/google/snappy/blob/main/format_description.txt)
+//! The public surface is four names — everything else composes through
+//! their namespaces:
+//!
+//!   - `snappy.encode` — the block encoder: `encode.compressBlock`,
+//!     `encode.maxCompressedLength`, `encode.max_block_size`.
+//!   - `snappy.decode` — the block decoder: `decode.decompressBlock`,
+//!     `decode.decompressedBlockLength`, `decode.DecompressError`.
+//!   - `snappy.Reader` / `snappy.Writer` — the streaming `Io` layer over
+//!     the framed stream: `Reader.Buffer`, `Reader.streamAll`,
+//!     `Writer.scratch_len`, `finish`, and the interfaces themselves.
+//!
+//! Contracts live in `README.md` (the module's API document).
 
 const std = @import("std");
 
-const decode = @import("decode.zig");
-/// The error set of `decompressedBlockLength` and `decompressBlock`:
-/// `BufferTooSmall` (size `target` via `decompressedBlockLength` first) or
-/// `DecompressionFailed` (corrupt input).
-pub const DecompressError = decode.DecompressError;
-/// Decompress a raw snappy block from `source` into `target`. Returns bytes written.
-/// `error.BufferTooSmall` when `target` is too small (size via
-/// `decompressedBlockLength`); `error.DecompressionFailed` on corrupt input.
-/// Zero heap allocation.
-pub const decompressBlock = decode.decompressBlock;
-/// Decompressed byte length of a raw snappy block (the leading varint).
-pub const decompressedBlockLength = decode.decompressedBlockLength;
-const encode = @import("encode.zig");
-/// Worst-case raw-block compressed size for `input_len` bytes (varint length
-/// prefix + literal blowup bound). Size `target` to this before `compressBlock`.
-pub const maxCompressedLength = encode.maxCompressedLength;
-/// Maximum raw-block size (65536). Snappy positions are stored as `u16`;
-/// `compressBlock` asserts `source.len <= max_block_size`. Larger inputs are
-/// split into blocks by the caller's framing layer.
-pub const max_block_size = encode.max_block_size;
-/// Compress `source` into `target` as a raw snappy block. Returns bytes written.
-/// `error.BufferTooSmall` when `target` is too small — size it via
-/// `maxCompressedLength`. Zero heap allocation.
-pub const compressBlock = encode.compressBlock;
-/// A decompressing `Io.Reader` over the framed snappy stream
-/// (README.md, "Streaming"). Consume through `&r.reader`; ends cleanly with
-/// `error.EndOfStream`. Zero heap allocation.
+pub const decode = @import("decode.zig");
+pub const encode = @import("encode.zig");
 pub const Reader = @import("Reader.zig");
-/// A compressing `Io.Writer` over the framed snappy stream
-/// (README.md, "Streaming"). Write through `&w.writer`; complete with
-/// `finish`. Zero heap allocation.
 pub const Writer = @import("Writer.zig");
 
 test {

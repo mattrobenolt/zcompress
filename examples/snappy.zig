@@ -4,7 +4,7 @@
 //! This is the thin-pump shape the streaming layer enables: `encode` wraps
 //! stdout in a `snappy.Writer` and pumps stdin into it; `decode` wraps stdin
 //! in a `snappy.Reader` and pumps it into stdout. The framing
-//! (`u32-le compressed_length + raw block`, split at `snappy.max_block_size`)
+//! (`u32-le compressed_length + raw block`, split at `snappy.encode.max_block_size`)
 //! is the package's stream format — it lives in `src/snappy/` (see
 //! `snappy.Reader`/`snappy.Writer` and `src/snappy/README.md`), not here.
 //!

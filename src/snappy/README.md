@@ -14,37 +14,38 @@ deliberately out.
 
 ## API
 
+The public surface is four names — everything else composes through their
+namespaces:
+
 ```zig
 const snappy = @import("snappy");
 
-// Worst-case compressed size — size `target` to this before compress.
-snappy.maxCompressedLength(input_len: usize) usize
+// The block encoder (snappy.encode):
+snappy.encode.compressBlock(source, target) error{BufferTooSmall}!usize
+snappy.encode.maxCompressedLength(input_len) usize
+snappy.encode.max_block_size      // 65536, the u16-position limit: the
+                                  // block-size precondition compressBlock asserts
 
-// Compress `source` into `target` as a raw snappy block. Zero heap allocation.
-// `source.len` must be <= max_block_size (snappy's u16-position limit); a
-// consumer's framing layer splits larger inputs into blocks.
-snappy.compressBlock(source: []const u8, target: []u8) error{BufferTooSmall}!usize
+// The block decoder (snappy.decode):
+snappy.decode.decompressBlock(source, target) DecompressError!usize
+snappy.decode.decompressedBlockLength(source) DecompressError!usize
+snappy.decode.DecompressError = error{ BufferTooSmall, DecompressionFailed };
 
-// Decompress a raw snappy block. Zero heap allocation.
-snappy.decompressBlock(source: []const u8, target: []u8) DecompressError!usize
-
-// Read the decompressed length (the leading varint) to size `target`.
-snappy.decompressedBlockLength(source: []const u8) DecompressError!usize
-
-// The block-size precondition: 65536. compressBlock asserts it.
-snappy.max_block_size: usize
-
-// Streaming: a compressing Io.Writer over the framed stream.
-var w: snappy.Writer = .init(out, &wbuf);   // wbuf: snappy.WriterBuffer
+// The streaming Io layer: Writer.Buffer / Reader.Buffer are the
+// caller-provided buffer types (exact pointers at init).
+var w: snappy.Writer = .init(out, &wbuf);   // wbuf: snappy.Writer.Buffer
 try w.writer.writeAll(bytes);               // through the Io.Writer interface
 try w.finish();
-
-// Streaming: a decompressing Io.Reader over the framed stream.
-var r: snappy.Reader = .init(in, &rbuf);    // rbuf: snappy.ReaderBuffer
+var r: snappy.Reader = .init(in, &rbuf);    // rbuf: snappy.Reader.Buffer
 // consume through &r.reader (stream, read-family, peek-family)
 
-pub const DecompressError = error{ BufferTooSmall, DecompressionFailed };
+// The one-call conveniences: buffers on the frame, zero allocation.
+snappy.Writer.streamAll(in, out) error{ReadFailed, WriteFailed}!usize
+snappy.Reader.streamAll(in, out) error{ReadFailed, WriteFailed}!usize
 ```
+
+`compressBlock` takes `source.len <= max_block_size` — a consumer's framing
+layer splits larger inputs into blocks.
 
 Contracts, stated plainly:
 

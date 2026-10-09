@@ -41,6 +41,7 @@ Apply when they match. Skip silently when they don't.
 
 ### Function/identifier shape
 6a. **Byte-buffer pairs are `source`/`target`** (equal length, data-flow order); `src`/`dst`/`out` on a byte-slice pair is a finding. `in`/`out` are reserved for `*Io.Reader`/`*Io.Writer` params. Rename in doc comments too.
+6c. **The codec barrel is exactly `{Reader, Writer, encode, decode}`** — a flat root re-export of a module fn (`pub const compressBlock = encode.compressBlock;` at the root) is a finding; the namespaces are the surface.
 6b. **CamelCase names spell `Length` unabbreviated** (`decompressedBlockLength`, never `...BlockLen`); snake_case identifiers keep `len` (std's `.len` convention). Applies to doc comments and README too.
 7. **Do not auto-add `inline fn`.** The compiler auto-inlines trivial bodies; explicit `inline fn` is a human decision driven by profiling evidence. Surface non-trivial hot-path candidates only in `manual-fix-needed`.
 7a. **Named enums with `std.meta.stringToEnum`** over inline `enum { ... }` chains in const initializers (`const Mode = enum { encode, decode };` then `stringToEnum(Mode, cmd) orelse ...`).

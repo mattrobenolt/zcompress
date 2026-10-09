@@ -112,6 +112,10 @@ Deviations, on purpose:
   asserts.
 - A single `*Io.Reader`/`*Io.Writer` param is named `input`/`output` (the
   `std.compress.flate` precedent); `in`/`out` name reader/writer pairs.
+- The umbrella barrel exposes exactly `{Reader, Writer, encode, decode}` —
+  everything else composes through those namespaces
+  (`snappy.encode.compressBlock`, `snappy.Reader.streamAll`,
+  `snappy.Writer.Buffer`). No flat re-export menu at the root.
 - CamelCase API names spell `Length` unabbreviated
   (`maxCompressedLength`, `decompressedBlockLength`); snake_case
   identifiers keep `len` (std's `.len` convention: `scratch_len`,

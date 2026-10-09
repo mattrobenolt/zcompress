@@ -78,12 +78,12 @@ pub fn benchmarkCompress(b: *bench.B) !void {
             fn run(bb: *bench.B) !void {
                 const input = try makeShape(bb.allocator, shape, 32 * 1024);
                 defer bb.allocator.free(input);
-                const bound = snappy.maxCompressedLength(input.len);
+                const bound = snappy.encode.maxCompressedLength(input.len);
                 const comp = try bb.allocator.alloc(u8, bound);
                 defer bb.allocator.free(comp);
 
                 while (try bb.loop()) {
-                    const n = try snappy.compressBlock(input, comp);
+                    const n = try snappy.encode.compressBlock(input, comp);
                     bb.keepAlive(n);
                 }
                 bb.setBytes(@intCast(input.len));
@@ -101,17 +101,17 @@ pub fn benchmarkDecompress(b: *bench.B) !void {
             fn run(bb: *bench.B) !void {
                 const input = try makeShape(bb.allocator, shape, 32 * 1024);
                 defer bb.allocator.free(input);
-                const bound = snappy.maxCompressedLength(input.len);
+                const bound = snappy.encode.maxCompressedLength(input.len);
                 const comp = try bb.allocator.alloc(u8, bound);
                 defer bb.allocator.free(comp);
-                const clen = try snappy.compressBlock(input, comp);
+                const clen = try snappy.encode.compressBlock(input, comp);
 
-                const dlen = try snappy.decompressedBlockLength(comp[0..clen]);
+                const dlen = try snappy.decode.decompressedBlockLength(comp[0..clen]);
                 const back = try bb.allocator.alloc(u8, dlen);
                 defer bb.allocator.free(back);
 
                 while (try bb.loop()) {
-                    const n = try snappy.decompressBlock(comp[0..clen], back);
+                    const n = try snappy.decode.decompressBlock(comp[0..clen], back);
                     bb.keepAlive(n);
                 }
                 bb.setBytes(@intCast(dlen));
@@ -129,10 +129,10 @@ pub fn benchmarkRatio(b: *bench.B) !void {
             fn run(bb: *bench.B) !void {
                 const input = try makeShape(bb.allocator, shape, 32 * 1024);
                 defer bb.allocator.free(input);
-                const bound = snappy.maxCompressedLength(input.len);
+                const bound = snappy.encode.maxCompressedLength(input.len);
                 const comp = try bb.allocator.alloc(u8, bound);
                 defer bb.allocator.free(comp);
-                const clen = try snappy.compressBlock(input, comp);
+                const clen = try snappy.encode.compressBlock(input, comp);
                 const ratio = @as(f64, @floatFromInt(clen)) / @as(f64, @floatFromInt(input.len));
                 try bb.reportMetric(ratio, "ratio");
                 // One iteration so the harness is happy; the metric is the point.
