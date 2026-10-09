@@ -24,6 +24,7 @@ const common = @import("common.zig");
 const readInt = common.readInt;
 const writeInt = common.writeInt;
 const encode = @import("encode.zig");
+const Reader = @import("Reader.zig");
 
 /// The caller-provided uncompressed accumulation buffer: one full block.
 pub const Buffer = [encode.max_block_size]u8;
@@ -64,20 +65,23 @@ pub fn finish(w: *Writer) Io.Writer.Error!void {
     try w.output.flush();
 }
 
-/// Compress the buffered block into stack scratch and emit it with the
-/// `u32-le` length prefix. A no-op when nothing is buffered.
-fn emitBlock(w: *Writer) Io.Writer.Error!void {
-    if (w.writer.end == 0) return;
+/// Compress `bytes` (a region of the accumulation buffer) into stack
+/// scratch and emit it with the `u32-le` length prefix. A no-op when empty.
+fn emit(w: *Writer, bytes: []const u8) Io.Writer.Error!void {
+    if (bytes.len == 0) return;
+    assert(bytes.len <= encode.max_block_size);
     var scratch: [scratch_len]u8 = undefined;
-    const source = w.writer.buffer[0..w.writer.end];
-    const n = encode.compressBlock(source, &scratch) catch |err| switch (err) {
-        // `scratch` is sized to the exact worst case for any block.
-        error.BufferTooSmall => unreachable,
-    };
+    // `scratch` is sized to the exact worst case for any block.
+    const n = encode.compressBlock(bytes, &scratch) catch unreachable;
     var prefix: [4]u8 = undefined;
     writeInt(u32, &prefix, @intCast(n));
     try w.output.writeAll(&prefix);
     try w.output.writeAll(scratch[0..n]);
+}
+
+/// Emit the whole buffered block and empty the buffer.
+fn emitBlock(w: *Writer) Io.Writer.Error!void {
+    try w.emit(w.writer.buffer[0..w.writer.end]);
     w.writer.end = 0;
     // Postcondition: the block is fully emitted and the buffer is empty.
     assert(w.writer.end == 0);
@@ -126,12 +130,17 @@ fn flush(w: *Io.Writer) Io.Writer.Error!void {
     try parent.output.flush();
 }
 
-/// Blocks are independent, so no compression state rides on the buffer:
-/// slide the last `preserve` bytes to the front.
+/// Everything buffered except the last `preserve` bytes is written data:
+/// emit it as a block, then slide the preserved tail to the front. (A
+/// consumer can ask for a direct writable slice into the buffer via
+/// `writableSliceGreedy`; when the buffer is full, that call lands here —
+/// discarding instead of emitting would silently drop a whole block.)
 fn rebase(w: *Io.Writer, preserve: usize, capacity: usize) Io.Writer.Error!void {
     errdefer w.* = .failing;
     assert(preserve + capacity <= w.buffer.len);
+    const parent: *Writer = @fieldParentPtr("writer", w);
     const keep = @min(preserve, w.end);
+    try parent.emit(w.buffer[0 .. w.end - keep]);
     fastmem.move(u8, w.buffer[0..keep], w.buffer[w.end - keep ..][0..keep]);
     w.end = keep;
 }
@@ -167,6 +176,48 @@ test "Writer: writes past one block split into full blocks" {
     try w.finish();
     // Four blocks: three full (64K each) plus a one-byte tail.
     try testing.expectEqual(4, countBlocks(out.written()));
+}
+
+test "Writer: writableSliceGreedy on a full buffer emits, never drops" {
+    // The File.Reader simple-mode stream feeds a Writer through
+    // `writableSliceGreedy` + `advance` (a direct write into the buffer),
+    // which lands on `rebase` when the buffer is full. A regression: rebase
+    // once freed space by discarding the buffered block instead of
+    // emitting it, silently dropping a whole block of input.
+    const gpa = testing.allocator;
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var buf: Buffer = undefined;
+    var w: Writer = .init(&out.writer, &buf);
+
+    // Fill the buffer exactly, without forcing a drain.
+    try w.writer.writeAll("a" ** encode.max_block_size);
+    // The direct-slice read: fills the (freshly emitted) whole buffer.
+    const dest = try w.writer.writableSliceGreedy(1);
+    try testing.expectEqual(encode.max_block_size, dest.len);
+    fastmem.set(u8, dest, 0x62);
+    w.writer.advance(dest.len);
+    // More writes past the second block, then finish.
+    try w.writer.writeAll("c" ** 1000);
+    try w.finish();
+
+    // Three blocks: 'a' x 65536, 'b' x 65536, 'c' x 1000.
+    try testing.expectEqual(3, countBlocks(out.written()));
+    var rbuf: Reader.Buffer = undefined;
+    var fixed_in: Io.Reader = .fixed(out.written());
+    var r: Reader.Reader = .init(&fixed_in, &rbuf);
+    var plain: Io.Writer.Allocating = .init(gpa);
+    defer plain.deinit();
+    while (true) {
+        _ = r.reader.stream(&plain.writer, .unlimited) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
+    }
+    try testing.expectEqual(2 * encode.max_block_size + 1000, plain.written().len);
+    try testing.expect(plain.written()[0] == 'a');
+    try testing.expect(plain.written()[encode.max_block_size] == 'b');
+    try testing.expect(plain.written()[2 * encode.max_block_size] == 'c');
 }
 
 test "Writer: flush mid-stream emits the partial block" {

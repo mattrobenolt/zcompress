@@ -102,6 +102,9 @@ Semantics:
   partial block and keeps the writer usable.
 - Full blocks stay maximal: `drain` emits one buffered block, then accepts
   what fits of the incoming data; the machinery re-slices and retries.
+  `rebase` (which `writableSliceGreedy` hits when the buffer is full — the
+  `File.Reader` simple-mode stream feeds writers this way) emits everything
+  buffered beyond the preserved tail, never discards it.
 - `Reader` ends cleanly with `error.EndOfStream` at a block boundary (zero
   bytes available; sticky) and fails closed with `error.ReadFailed` (sticky,
   details in `err`) on any corrupt framing or block. A partial length prefix,
