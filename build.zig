@@ -81,6 +81,7 @@ pub fn build(b: *Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "snappy", .module = snappy_mod },
+                .{ .name = "fastmem", .module = fastmem_mod },
             },
         });
         const run_snappy_bench = benchmark.addRunTest(b, .{

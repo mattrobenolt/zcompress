@@ -122,7 +122,8 @@ Every codec runs the same loop, one at a time:
    record provenance, extract the requirements matrix, list fixture sources.
    No code.
 2. API sketch (parent): the public surface, error sets, buffer ownership,
-   `std.Io` integration. Matt reviews before implementation.
+   `std.Io` integration. The sketch lands as the module's `README.md`,
+   written before any implementation. Matt reviews it before code exists.
 3. Data structures: windows, finders, tables. A shared candidate goes to
    `internal/` only when a second codec needs it.
 4. Implementation (slice-worker) under an explicit acceptance contract.
@@ -153,8 +154,10 @@ waits for both.
 
 ## Benchmark methodology
 
-- Local signal: `just bench` (zig-benchmark, benchstat-friendly
-  `--count=N`). Local numbers are never quoted as claims.
+- Iteration is local-first (Matt, 2026-10-08): remote machines slow the
+  iteration cycle, so the fleet is on demand, not the default feedback loop.
+  Local `just bench` (zig-benchmark, benchstat-friendly `--count=N`) drives
+  development. Local numbers are never quoted as claims.
 - Claims: the fleet harness, ported from fastmem at M1. Seven EC2 targets
   (c7i, c8i, c7a, c8a, c7g, c8g, c9g), n>=5 rounds, exact confidence
   intervals, outlier rounds reported and never removed.
@@ -200,11 +203,11 @@ the agent roster, snappy lifted and green under 0.16 with fastmem wired in.
 Acceptance: `zig build test` and `just lint` pass on the host, `just bench`
 runs, and the commit exists.
 
-M1 — snappy formal. The fleet harness ports from fastmem. The snappy
-baseline runs against golang/snappy, google/snappy C++, klauspost s2
-(snappy-compat mode), and the std baseline.
-Acceptance: n>=5 rounds on all seven targets, results committed under
-`docs/results/`, README numbers citing their run directories.
+M1 — snappy API review. The module `README.md` documents the public surface;
+Matt reviews it (README-first). Acceptance: the README merged, the API settled.
+The fleet baseline against golang/snappy, google/snappy C++, and klauspost s2
+(snappy-compat mode) runs on demand, before the first public performance
+claim, and lands under `docs/results/` with its run directory cited.
 
 M2 — flate. Fast encoder (klauspost level-1 class) plus full inflate. Golden
 vectors from the Go flate suite; conformance via the gzip CLI; fuzz targets
@@ -237,7 +240,12 @@ variants; vendor those spec sections at M6).
 - Block functions before streaming cores before `std.Io` adapters.
 - Zero allocation on codec hot paths; an arena for setup.
 - The fleet harness ports from fastmem at M1.
-- API sketches get Matt's review before implementation.
+- API sketches get Matt's review before implementation; each module's
+  README is written first and is the API sketch (2026-10-08).
+- Local-first iteration: the fleet runs on demand, not as the default loop
+  (2026-10-08).
+- No `@memcpy`/`@memmove`/`@memset` anywhere in this repo's source —
+  `fastmem.copy`/`move`/`set` only (2026-10-08).
 
 ## Decisions deferred
 

@@ -5,8 +5,9 @@
 
 const std = @import("std");
 
-/// Raw-block Snappy codec (docs/research/specs/snappy-format-description.txt).
-/// Block functions over caller-owned buffers, zero heap allocation.
+/// Raw-block Snappy codec. Block functions over caller-owned buffers, zero
+/// heap allocation. API and design: `src/snappy/README.md`; format:
+/// docs/research/specs/snappy-format-description.txt.
 pub const snappy = @import("snappy");
 
 test {

@@ -317,7 +317,7 @@ test "decompress: literal-only block" {
     var block: [16]u8 = undefined;
     block[0] = 0x0D;
     block[1] = 0x30;
-    @memcpy(block[2..][0..msg.len], msg);
+    fastmem.copy(u8, block[2..][0..msg.len], msg);
     const dlen = try decompressedBlockLen(block[0 .. 2 + msg.len]);
     try testing.expectEqual(msg.len, dlen);
     var out: [32]u8 = undefined;
@@ -370,15 +370,15 @@ test "decompress: too-small out buffer returns BufferTooSmall" {
     var block: [16]u8 = undefined;
     block[0] = 0x0D;
     block[1] = 0x30;
-    @memcpy(block[2..][0..msg.len], msg);
+    fastmem.copy(u8, block[2..][0..msg.len], msg);
     var out: [4]u8 = undefined;
     try testing.expectError(error.BufferTooSmall, decompressBlock(block[0 .. 2 + msg.len], &out));
 }
 
 test "copyMatch: non-overlapping uses plain copy" {
     var buf: [64]u8 = undefined;
-    @memset(&buf, 0);
-    @memcpy(buf[0..8], "abcdefgh");
+    fastmem.set(u8, &buf, 0);
+    fastmem.copy(u8, buf[0..8], "abcdefgh");
     copyMatch(&buf, 16, 16, 8); // copy buf[0..8] to buf[16..24]
     try testing.expectEqualSlices(u8, "abcdefgh", buf[16..24]);
 }
@@ -388,7 +388,7 @@ test "copyMatch: SIMD shuffle for small offsets round-trips" {
     // spans multiple 16-byte chunks plus a tail.
     for (1..17) |offset| {
         var buf: [256]u8 = undefined;
-        @memset(&buf, 0);
+        fastmem.set(u8, &buf, 0);
         // Seed the first `offset` bytes with a recognizable pattern.
         for (0..offset) |i| buf[i] = @intCast(0xA0 + (i % 16));
         const length = 64 + offset; // > 16, forces chunked stores + tail
@@ -505,7 +505,7 @@ test "golden decode: golang/snappy TestDecode vector table" {
                 var b: [42]u8 = undefined;
                 b[0] = 0x28;
                 b[1] = 0x9c;
-                @memcpy(b[2..][0..lit40.len], &lit40);
+                fastmem.copy(u8, b[2..][0..lit40.len], &lit40);
                 break :blk &b;
             },
             .want = &lit40,
@@ -688,7 +688,7 @@ test "golden decode: large copy-4 offset (golang TestDecodeCopy4)" {
     p += 3;
     // literal "pqrs" (length 4 -> tag (4-1)<<2 = 0x0c)
     input[p] = 0x0c;
-    @memcpy(input[p + 1 ..][0..4], "pqrs");
+    fastmem.copy(u8, input[p + 1 ..][0..4], "pqrs");
     p += 5;
     // literal 65536 '.' (length 65536 -> 2-byte extended: tag 0xf4, len-1 LE)
     input[p] = 0xf4;
@@ -696,7 +696,7 @@ test "golden decode: large copy-4 offset (golang TestDecodeCopy4)" {
     input[p + 1] = @truncate(n);
     input[p + 2] = @truncate(n >> 8);
     p += 3;
-    @memset(input[p..][0..dots_len], '.');
+    fastmem.set(u8, input[p..][0..dots_len], '.');
     p += dots_len;
     // copy-4: length 5, offset 65540. tag = ((5-1)<<2)|0b11 = 0x13.
     // offset 65540 = 0x00010004 LE.
@@ -741,7 +741,7 @@ test "golden decode: literal + copy2 + literal (golang TestDecodeLengthOffset)" 
                 p += writeUvarint(input_buf[p..], total_len) catch unreachable;
                 input_buf[p] = @as(u8, @intCast(prefix.len - 1)) << 2; // tagLiteral
                 p += 1;
-                @memcpy(input_buf[p..][0..prefix.len], prefix);
+                fastmem.copy(u8, input_buf[p..][0..prefix.len], prefix);
                 p += prefix.len;
                 input_buf[p] = @as(u8, @intCast(length - 1)) << 2 | 0b10; // tagCopy2
                 input_buf[p + 1] = @truncate(@as(u32, @intCast(offset)));
@@ -750,7 +750,7 @@ test "golden decode: literal + copy2 + literal (golang TestDecodeLengthOffset)" 
                 if (suffix_len > 0) {
                     input_buf[p] = @as(u8, @intCast(suffix_len - 1)) << 2; // tagLiteral
                     p += 1;
-                    @memcpy(input_buf[p..][0..suffix_len], suffix[0..suffix_len]);
+                    fastmem.copy(u8, input_buf[p..][0..suffix_len], suffix[0..suffix_len]);
                     p += suffix_len;
                 }
                 const input = input_buf[0..p];
@@ -768,13 +768,13 @@ test "golden decode: literal + copy2 + literal (golang TestDecodeLengthOffset)" 
                 // Build the expected output: prefix + (length bytes copied
                 // from offset back) + suffix.
                 var w: usize = 0;
-                @memcpy(want_buf[w..][0..prefix.len], prefix);
+                fastmem.copy(u8, want_buf[w..][0..prefix.len], prefix);
                 w += prefix.len;
                 for (0..length) |i| {
                     want_buf[w + i] = want_buf[w + i - offset];
                 }
                 w += length;
-                @memcpy(want_buf[w..][0..suffix_len], suffix[0..suffix_len]);
+                fastmem.copy(u8, want_buf[w..][0..suffix_len], suffix[0..suffix_len]);
                 w += suffix_len;
                 try testing.expectEqualSlices(u8, want_buf[0..w], got_buf[0..n]);
 

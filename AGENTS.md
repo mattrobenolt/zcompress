@@ -38,9 +38,12 @@ it before you change a kernel or make a performance claim.
 
 ## Dependencies
 
-- fastmem (non-lazy): the blessed memory-copy primitive. Codecs use
-  `fastmem.copy` on copy paths; `@memcpy` on codec hot paths is a review
-  finding. Copy semantics only — never on overlapping ranges.
+- fastmem (non-lazy): the only memory-copy primitive in this repo. Never
+  write `@memcpy`, `@memmove`, or `@memset` in this repo's source — not on
+  codec hot paths, not in tests, not in bench corpus builders. Use
+  `fastmem.copy`, `fastmem.move`, `fastmem.set` (all `(comptime T, dest,
+  ...)`). `copy` and `set` are non-overlapping only; `move` handles overlap.
+  A stray `@memcpy` in a diff is a review blocker.
 - benchmark, ztest (lazy): bench and test steps only, never imported by
   codecs. In `build.zig`, lazy deps must go through `b.lazyImport` /
   `b.lazyDependency`, never `b.dependency`.
@@ -50,6 +53,9 @@ it before you change a kernel or make a performance claim.
 - Spec-first: a codec's work starts from `docs/research/specs/`. Every format
   test cites the spec file and section it validates:
   `// RFC 1951 §3.2.5 — fixed Huffman`.
+- README-first: each codec directory carries its own `README.md` documenting
+  the public API. Write it before the implementation — it is the API sketch
+  Matt reviews. An API change updates the module README in the same commit.
 - A codec imports only `std` and `fastmem`. No cross-codec imports; shared
   primitives go to `src/internal/` only when two codecs need them.
 - Zero heap allocation on codec hot paths. Caller owns buffers; setup

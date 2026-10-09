@@ -11,6 +11,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const DefaultPrng = std.Random.DefaultPrng;
+const fastmem = @import("fastmem");
 
 const bench = @import("benchmark");
 const snappy = @import("snappy");
@@ -33,7 +34,7 @@ fn makeShape(allocator: Allocator, shape: Shape, len: usize) ![]u8 {
             var i: usize = 0;
             while (i < len) {
                 const n = @min(phrase.len, len - i);
-                @memcpy(buf[i..][0..n], phrase[0..n]);
+                fastmem.copy(u8, buf[i..][0..n], phrase[0..n]);
                 i += n;
             }
         },
@@ -46,11 +47,11 @@ fn makeShape(allocator: Allocator, shape: Shape, len: usize) ![]u8 {
             var i: usize = 0;
             while (i < len) {
                 const n = @min(phrase.len, len - i);
-                @memcpy(buf[i..][0..n], phrase[0..n]);
+                fastmem.copy(u8, buf[i..][0..n], phrase[0..n]);
                 i += n;
             }
         },
-        .rle => @memset(buf, 0x41),
+        .rle => fastmem.set(u8, buf, 0x41),
         .mixed => {
             var rng: DefaultPrng = .init(0x5A4BEEF);
             for (buf, 0..) |*b, i| b.* = @truncate(rng.random().int(u8) ^ @as(u8, @truncate(i)));

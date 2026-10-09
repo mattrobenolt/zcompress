@@ -505,7 +505,7 @@ test "maxCompressedLength >= actual for literal-only small input" {
     inline for (.{ 0, 1, 30, 31, 60, 61, 256, 257 }) |size| {
         const input = try testing.allocator.alloc(u8, size);
         defer testing.allocator.free(input);
-        @memset(input, 0xAB);
+        fastmem.set(u8, input, 0xAB);
         const bound = maxCompressedLength(size);
         const comp = try testing.allocator.alloc(u8, bound);
         defer testing.allocator.free(comp);
@@ -520,7 +520,7 @@ test "emitCopy: long match splits into chunks" {
     // snappy blocks are <= 64 KiB so offsets are always < 65536; copy-4 is
     // exercised on the decode side instead (see decode.zig).
     var input: [65536]u8 = undefined;
-    @memset(&input, 0);
+    fastmem.set(u8, &input, 0);
     // A 64-byte alphabet repeated ~1000 times: one long copy of length ~65500.
     for (0..64) |i| input[i] = @intCast('A' + i % 26);
     for (64..input.len) |i| input[i] = input[i % 64];
