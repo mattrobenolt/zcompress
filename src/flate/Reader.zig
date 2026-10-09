@@ -32,11 +32,10 @@ const fastmem = @import("fastmem");
 
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
-const golden = @import("golden.zig");
-const Writer = @import("Writer.zig");
-
 const history_len = encode.history_len;
 const max_block_size = encode.max_block_size;
+const golden = @import("golden.zig");
+const Writer = @import("Writer.zig");
 
 /// `§3.2.5` — the longest match a symbol can declare (length code 285 is 258),
 /// so the decoder stops this far short of a full window.
@@ -516,7 +515,7 @@ fn roundTrip(source: []const u8) !void {
     var compressed: Io.Writer.Allocating = .init(gpa);
     defer compressed.deinit();
     var wbuf: Writer.Buffer = undefined;
-    var w: Writer = .init(&compressed.writer, &wbuf);
+    var w: Writer = .init(&compressed.writer, &wbuf, .{});
     try w.writer.writeAll(source);
     try w.finish();
 
@@ -739,7 +738,7 @@ test "Reader: consumes input exactly through the stream's last byte" {
         var compressed: Io.Writer.Allocating = .init(gpa);
         defer compressed.deinit();
         var wbuf: Writer.Buffer = undefined;
-        var w: Writer = .init(&compressed.writer, &wbuf);
+        var w: Writer = .init(&compressed.writer, &wbuf, .{});
         try w.writer.writeAll(source);
         try w.finish();
 
@@ -764,7 +763,7 @@ test "Reader: consumes input exactly through the stream's last byte" {
     var compressed: Io.Writer.Allocating = .init(gpa);
     defer compressed.deinit();
     var wbuf: Writer.Buffer = undefined;
-    var w: Writer = .init(&compressed.writer, &wbuf);
+    var w: Writer = .init(&compressed.writer, &wbuf, .{});
     const source = try makeSource(gpa, 100_000);
     defer gpa.free(source);
     try w.writer.writeAll(source);
@@ -797,7 +796,7 @@ test "Reader: a 32-KiB peek is served at any position" {
     var compressed: Io.Writer.Allocating = .init(gpa);
     defer compressed.deinit();
     var wbuf: Writer.Buffer = undefined;
-    var w: Writer = .init(&compressed.writer, &wbuf);
+    var w: Writer = .init(&compressed.writer, &wbuf, .{});
     try w.writer.writeAll(source);
     try w.finish();
 
@@ -833,7 +832,7 @@ test "Reader: a request past the window fails closed with StreamTooLong" {
     var compressed: Io.Writer.Allocating = .init(gpa);
     defer compressed.deinit();
     var wbuf: Writer.Buffer = undefined;
-    var w: Writer = .init(&compressed.writer, &wbuf);
+    var w: Writer = .init(&compressed.writer, &wbuf, .{});
     try w.writer.writeAll(source);
     try w.finish();
 
@@ -867,7 +866,7 @@ test "Reader: a consumer scanning for a delimiter past the window fails closed" 
     var compressed: Io.Writer.Allocating = .init(gpa);
     defer compressed.deinit();
     var wbuf: Writer.Buffer = undefined;
-    var w: Writer = .init(&compressed.writer, &wbuf);
+    var w: Writer = .init(&compressed.writer, &wbuf, .{});
     try w.writer.writeAll(source);
     try w.finish();
 
@@ -890,7 +889,7 @@ test "Reader: a stream ends cleanly and stickily" {
     var compressed: Io.Writer.Allocating = .init(gpa);
     defer compressed.deinit();
     var wbuf: Writer.Buffer = undefined;
-    var w: Writer = .init(&compressed.writer, &wbuf);
+    var w: Writer = .init(&compressed.writer, &wbuf, .{});
     try w.writer.writeAll(source);
     try w.finish();
 
@@ -924,7 +923,7 @@ test "Reader: random consumer machinery sequences stay correct" {
         var out: Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
         var wbuf: Writer.Buffer = undefined;
-        var w: Writer = .init(&out.writer, &wbuf);
+        var w: Writer = .init(&out.writer, &wbuf, .{});
         var p: usize = 0;
         while (p < input.len) {
             const n = @min(input.len - p, rand.intRangeAtMost(usize, 1, 90_000));
@@ -1030,14 +1029,8 @@ test "Reader: a corrupt stream fails closed and stays failed" {
 /// stream's end (the final partial byte included) — bytes after the stream
 /// are left unconsumed. The reader and its window live on this stack frame;
 /// zero allocation.
-pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamError!usize {
-    var n: usize = 0;
+pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!usize {
     var buf: Buffer = undefined;
     var rr: Reader = .init(r, &buf);
-    while (true) {
-        n += rr.reader.stream(w, .unlimited) catch |err| switch (err) {
-            error.EndOfStream => return n,
-            else => return @errorCast(err),
-        };
-    }
+    return rr.reader.streamRemaining(w);
 }

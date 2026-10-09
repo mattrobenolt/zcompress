@@ -414,7 +414,7 @@ fn emitMatch(
 /// boundary, then LEN and NLEN (u16 little-endian, NLEN the one's complement of
 /// LEN) and LEN raw bytes. This is the fallback that makes
 /// `maxCompressedLength` provable: no block ever exceeds its stored form.
-fn emitStoredBlock(w: *BitWriter, block: []const u8) error{BufferTooSmall}!void {
+pub fn emitStoredBlock(w: *BitWriter, block: []const u8) error{BufferTooSmall}!void {
     assert(block.len <= max_block_size);
     try w.writeBits(0, 1); // BFINAL: the ending carries it (README, T4)
     try w.writeBits(0, 2); // BTYPE = 00, stored
@@ -616,13 +616,60 @@ pub fn compressBlock(
 /// The stream is self-delimiting: BFINAL on the final empty block ends it
 /// (`§3.2.3`), and every data block is fixed Huffman or stored. The same input
 /// always produces the same bytes.
-pub fn compress(source: []const u8, target: []u8) error{BufferTooSmall}!usize {
+/// Compression level. Every numeric zlib-style level is addressable
+/// (`.{ .level = .@"5" }`); pretty names reserve the tuned modes:
+///
+///   - `.fast` — the fixed-Huffman match-finding mode, the tuned default.
+///   - `.ratio` — dynamic Huffman (the later ratio mode). Unimplemented
+///     today: selecting it is `error.Unimplemented`, never silent aliasing.
+///   - `.@"0"` — stored blocks only, the format's passthrough level.
+///   - `.@"1"`..`.@"9"` — the numeric levels; today they all tune to
+///     `.fast` until more tuned modes exist (stated, not hidden).
+pub const Level = enum {
+    fast,
+    ratio,
+    @"0",
+    @"1",
+    @"2",
+    @"3",
+    @"4",
+    @"5",
+    @"6",
+    @"7",
+    @"8",
+    @"9",
+};
+
+/// Encoder configuration. `.{}` is the default: the fast level.
+pub const Options = struct {
+    level: Level = .fast,
+};
+
+/// Compress `source` as one raw deflate stream into `target`. Returns bytes
+/// written; `error.BufferTooSmall` when `target` is too small — size it via
+/// `maxCompressedLength`. Zero heap allocation.
+///
+/// The stream is self-delimiting: BFINAL on the final empty block ends it
+/// (`§3.2.3`), and every data block is fixed Huffman or stored. The same
+/// input and options always produce the same bytes.
+pub fn compress(
+    source: []const u8,
+    target: []u8,
+    options: Options,
+) error{ BufferTooSmall, Unimplemented }!usize {
+    if (options.level == .ratio) return error.Unimplemented;
+    const stored_only = options.level == .@"0";
+
     var w: BitWriter = .{ .target = target };
 
     var block_start: usize = 0;
     while (block_start < source.len) {
         const block_end = @min(block_start + max_block_size, source.len);
-        try compressBlock(source, block_start, block_end, &w);
+        if (stored_only) {
+            try emitStoredBlock(&w, source[block_start..block_end]);
+        } else {
+            try compressBlock(source, block_start, block_end, &w);
+        }
         block_start = block_end;
     }
 
@@ -705,7 +752,7 @@ fn roundTrip(input: []const u8) !void {
     const bound = maxCompressedLength(input.len);
     const comp = try allocator.alloc(u8, bound);
     defer allocator.free(comp);
-    const clen = try compress(input, comp);
+    const clen = try compress(input, comp, .{});
     try testing.expect(clen <= bound);
     try expectFinalEmptyBlock(comp[0..clen]);
 
@@ -757,13 +804,46 @@ fn makeShape(allocator: mem.Allocator, shape: Shape, len: usize) ![]u8 {
     return buf;
 }
 
+test "compress: options — every implemented level round-trips" {
+    // Levels are addressable by number and by name (`.{ .level = .@"5" }`);
+    // every implemented level must produce a stream our decoder decodes, and
+    // `.{}` is the fast default.
+    var comp: [4096]u8 = undefined;
+    var decoded: [4096]u8 = undefined;
+    const input = "the quick brown fox jumps over the lazy dog. " ** 8;
+
+    for ([_]Level{ .fast, .@"0", .@"1", .@"5", .@"9" }) |level| {
+        const n = try compress(input, &comp, .{ .level = level });
+        const dn = try decode.decompress(comp[0..n], &decoded);
+        try testing.expectEqualSlices(u8, input, decoded[0..dn]);
+    }
+
+    // The reserved seat: dynamic huffman is unimplemented, never silent.
+    try testing.expectError(error.Unimplemented, compress(input, &comp, .{ .level = .ratio }));
+}
+
+test "compress: the stored-only level emits stored blocks" {
+    // `.{ .level = .@"0" }` is the format's passthrough: every data block is
+    // stored (`§3.2.4`) — no match finding, no huffman codes.
+    var comp: [64]u8 = undefined;
+    const n = try compress("hello, flate!", &comp, .{ .level = .@"0" });
+    // 1 header byte (BFINAL=0, BTYPE=00, pad — our ending carries BFINAL,
+    // README T4) + LEN/NLEN (4) + 12 data + the 03 00 ending (2) = 19. zlib's
+    // level 0 sets BFINAL on the stored block instead (18) — both are valid
+    // streams; ours shares the single T4 ending with every other level.
+    try testing.expectEqual(@as(usize, 19), n);
+    var decoded: [16]u8 = undefined;
+    const dn = try decode.decompress(comp[0..n], &decoded);
+    try testing.expectEqualSlices(u8, "hello, flate!", decoded[0..dn]);
+}
+
 test "compress: empty input is the final empty block" {
     // Spec: rfc1951-deflate.txt §3.2.3 — "BFINAL is set if and only if this is
     // the last block of the data set", and README "Divergences" T4: the stream
     // ends with the empty fixed block `03 00`. Spec: §3.2.6 — the fixed
     // end-of-block code is seven zero bits.
     var target: [4]u8 = undefined;
-    const n = try compress("", &target);
+    const n = try compress("", &target, .{});
     try testing.expectEqual(@as(usize, 2), n);
     try testing.expectEqualSlices(u8, &[_]u8{ 0x03, 0x00 }, target[0..n]);
     try testing.expectEqual(@as(usize, 2), maxCompressedLength(0));
@@ -795,7 +875,7 @@ test "compress: §3.2.4 stored fallback for incompressible input" {
     defer allocator.free(input);
     const comp = try allocator.alloc(u8, maxCompressedLength(input.len));
     defer allocator.free(comp);
-    const clen = try compress(input, comp);
+    const clen = try compress(input, comp, .{});
 
     try testing.expectEqual(@as(u8, 0), comp[0] & 0b1); // BFINAL clear on data
     try testing.expectEqual(@as(u8, 0b00), (comp[0] >> 1) & 0b11); // BTYPE stored
@@ -870,7 +950,7 @@ test "compress: maxCompressedLength bounds every emission" {
             const bound = maxCompressedLength(len);
             const comp = try allocator.alloc(u8, bound);
             defer allocator.free(comp);
-            const clen = compress(input, comp) catch |err| {
+            const clen = compress(input, comp, .{}) catch |err| {
                 std.debug.print(
                     "FAIL: {s} len {d}: {s}\n",
                     .{ @tagName(shape), len, @errorName(err) },
@@ -893,7 +973,7 @@ test "compress: maxCompressedLength bounds every emission" {
         const bound = maxCompressedLength(input.len);
         const comp = try allocator.alloc(u8, bound);
         defer allocator.free(comp);
-        const clen = try compress(input, comp);
+        const clen = try compress(input, comp, .{});
         try testing.expect(clen <= bound);
         try roundTrip(input);
     }
@@ -902,9 +982,9 @@ test "compress: maxCompressedLength bounds every emission" {
 test "compress: a target smaller than the output is BufferTooSmall" {
     // README, "API" — `error.BufferTooSmall` when `target` is too small.
     var target: [2]u8 = undefined;
-    try testing.expectError(error.BufferTooSmall, compress("hello, flate!", &target));
+    try testing.expectError(error.BufferTooSmall, compress("hello, flate!", &target, .{}));
     // ... and the empty stream is the smallest legal output.
-    try testing.expectEqual(@as(usize, 2), try compress("", &target));
+    try testing.expectEqual(@as(usize, 2), try compress("", &target, .{}));
 }
 
 test "compress: deterministic" {
@@ -918,8 +998,8 @@ test "compress: deterministic" {
     defer allocator.free(first);
     const second = try allocator.alloc(u8, bound);
     defer allocator.free(second);
-    const a = try compress(input, first);
-    const b = try compress(input, second);
+    const a = try compress(input, first, .{});
+    const b = try compress(input, second, .{});
     try testing.expectEqual(a, b);
     try testing.expectEqualSlices(u8, first[0..a], second[0..b]);
 }
@@ -966,7 +1046,7 @@ test "compress: a match reaches back across a block boundary" {
 
     const comp = try allocator.alloc(u8, maxCompressedLength(input.len));
     defer allocator.free(comp);
-    const clen = try compress(input, comp);
+    const clen = try compress(input, comp, .{});
     // The first block is incompressible (stored: 65540 bytes); the second is
     // one match of 31768 bytes (~125 chunks of 258).
     try testing.expect(clen > 65540);
@@ -1035,7 +1115,7 @@ test "emit: flate-notes §3.2 stream 1 packing, byte-exact modulo BFINAL" {
     const input = [_]u8{'A'} ** 21;
     const comp = try allocator.alloc(u8, maxCompressedLength(input.len));
     defer allocator.free(comp);
-    const clen = try compress(&input, comp);
+    const clen = try compress(&input, comp, .{});
     const want = [_]u8{ 0x72, 0xc4, 0x06, 0x00, 0x03, 0x00 };
     try testing.expectEqualSlices(u8, &want, comp[0..clen]);
     try roundTrip(&input);
@@ -1138,7 +1218,7 @@ test "compress: every length and distance code round trips" {
 
     const comp = try allocator.alloc(u8, maxCompressedLength(input.len));
     defer allocator.free(comp);
-    const clen = try compress(&input, comp);
+    const clen = try compress(&input, comp, .{});
     try testing.expect(clen <= maxCompressedLength(input.len));
 
     const back = try allocator.alloc(u8, input.len + overrun_len);

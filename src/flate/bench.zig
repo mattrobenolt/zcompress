@@ -111,7 +111,7 @@ pub fn benchmarkCompress(b: *bench.B) !void {
                     defer bb.allocator.free(comp);
 
                     while (try bb.loop()) {
-                        const n = try flate.encode.compress(input, comp);
+                        const n = try flate.encode.compress(input, comp, .{});
                         bb.keepAlive(n);
                     }
                     bb.setBytes(@intCast(input.len));
@@ -134,7 +134,7 @@ pub fn benchmarkDecompress(b: *bench.B) !void {
                     const bound = flate.encode.maxCompressedLength(input.len);
                     const comp = try bb.allocator.alloc(u8, bound);
                     defer bb.allocator.free(comp);
-                    const clen = try flate.encode.compress(input, comp);
+                    const clen = try flate.encode.compress(input, comp, .{});
 
                     const back = try bb.allocator.alloc(u8, input.len);
                     defer bb.allocator.free(back);
@@ -163,7 +163,7 @@ pub fn benchmarkRatio(b: *bench.B) !void {
                     const bound = flate.encode.maxCompressedLength(input.len);
                     const comp = try bb.allocator.alloc(u8, bound);
                     defer bb.allocator.free(comp);
-                    const clen = try flate.encode.compress(input, comp);
+                    const clen = try flate.encode.compress(input, comp, .{});
                     const ratio = @as(f64, @floatFromInt(clen)) /
                         @as(f64, @floatFromInt(input.len));
                     try bb.reportMetric(ratio, "ratio");
