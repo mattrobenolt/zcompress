@@ -11,9 +11,9 @@ milestones, methodology, and the source-of-truth decisions.
 
 Design rules:
 
-- One module per codec, importing only `std` and
-  [fastmem](https://github.com/mattrobenolt/fastmem-zig). Lift a codec out
-  and it still builds.
+- One `zcompress` module, codecs as namespaces under it, importing only
+  `std` and [fastmem](https://github.com/mattrobenolt/fastmem-zig). Copy a
+  codec directory plus `src/internal/` out and it still builds.
 - Block functions first, then Sans-I/O streaming cores, then `std.Io`
   adapters. The caller owns every buffer; codec hot paths allocate nothing.
 - SIMD is `@Vector`/`@shuffle`/`@select` and `std.simd`, comptime-sized per

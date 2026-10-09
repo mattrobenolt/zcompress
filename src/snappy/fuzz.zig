@@ -32,7 +32,7 @@ const Smith = testing.Smith;
 
 const fastmem = @import("fastmem");
 
-const internal = @import("internal");
+const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
 const common = @import("common.zig");
 const decode = @import("decode.zig");

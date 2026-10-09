@@ -16,7 +16,7 @@ const writeUvarint = common.writeUvarint;
 
 const fastmem = @import("fastmem");
 
-const internal = @import("internal");
+const internal = @import("../internal/root.zig");
 const decode = @import("decode.zig");
 const decompressBlock = decode.decompressBlock;
 const decompressedBlockLength = decode.decompressedBlockLength;

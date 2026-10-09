@@ -1,7 +1,8 @@
 //! The codec-agnostic shares every zcompress codec may import
 //! (docs/zcompress-plan.md, "Architecture"): imports only `std` and
 //! `fastmem`, holds no codec-specific state, and travels with a codec that
-//! uses it. Never re-exported by the umbrella barrel or a codec barrel.
+//! uses it. Never re-exported by the barrel (`src/root.zig`) or a codec
+//! namespace.
 //!
 //! Contracts: README.md (the Io codec pattern book).
 

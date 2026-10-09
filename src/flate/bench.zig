@@ -15,7 +15,7 @@ const DefaultPrng = std.Random.DefaultPrng;
 const fastmem = @import("fastmem");
 
 const bench = @import("benchmark");
-const flate = @import("flate");
+const flate = @import("zcompress").flate;
 
 /// Input corpus shapes. Each returns a freshly-allocated buffer the benchmark
 /// is responsible for freeing (once, in setup — not in the timed loop).

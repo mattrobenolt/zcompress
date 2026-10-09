@@ -19,44 +19,18 @@ pub fn build(b: *Build) void {
     });
     const fastmem_mod = fastmem_dep.module("fastmem");
 
-    // The codec-agnostic shares (docs/zcompress-plan.md, "Architecture"):
-    // a private module the codecs import in their test files, never a
-    // re-export of the umbrella module or a codec barrel. A codec lifts out
-    // of the repo with `src/internal/` in tow, wired the same way.
-    const internal_mod = b.createModule(.{
-        .root_source_file = b.path("src/internal/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    internal_mod.addImport("fastmem", fastmem_mod);
-
-    // Codecs: one module each, self-contained (imports only `std` and
-    // `fastmem`, plus the in-repo `internal` share). A codec lifts out of
-    // the repo with its directory.
-    const snappy_mod = b.addModule("snappy", .{
-        .root_source_file = b.path("src/snappy/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    snappy_mod.addImport("fastmem", fastmem_mod);
-    snappy_mod.addImport("internal", internal_mod);
-
-    const flate_mod = b.addModule("flate", .{
-        .root_source_file = b.path("src/flate/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    flate_mod.addImport("fastmem", fastmem_mod);
-    flate_mod.addImport("internal", internal_mod);
-
-    // The umbrella module re-exports each codec.
+    // ONE module, `zcompress`, rooted at src/root.zig. Codecs are
+    // namespaces under it (`zcompress.snappy`, `zcompress.flate`); the
+    // codec-agnostic shares in `src/internal/` are reached by relative
+    // import, never a module import and never re-exported. A codec lifts
+    // out of the repo with its directory plus `src/internal/` in tow
+    // (docs/zcompress-plan.md, "Architecture").
     const zcompress_mod = b.addModule("zcompress", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    zcompress_mod.addImport("snappy", snappy_mod);
-    zcompress_mod.addImport("flate", flate_mod);
+    zcompress_mod.addImport("fastmem", fastmem_mod);
 
     // ztest: plain-text test runner. Lazy — only fetched when the test step
     // is actually built, not when consumers use zcompress as a dependency.
@@ -68,7 +42,8 @@ pub fn build(b: *Build) void {
     const test_step = b.step("test", "Run unit tests");
 
     // Example CLIs: one per codec (examples/), sharing examples/cli.zig.
-    // The framing decision per codec lives in its example file. Run:
+    // The framing decision per codec lives in its example file, and both
+    // consume the one module through its namespaces. Run:
     //   zig build example-snappy -- encode README.md > out
     const cli_mod = b.createModule(.{
         .root_source_file = b.path("examples/cli.zig"),
@@ -81,7 +56,7 @@ pub fn build(b: *Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "cli", .module = cli_mod },
-            .{ .name = "snappy", .module = snappy_mod },
+            .{ .name = "zcompress", .module = zcompress_mod },
         },
     });
     const snappy_example = b.addExecutable(.{
@@ -104,7 +79,7 @@ pub fn build(b: *Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "cli", .module = cli_mod },
-            .{ .name = "flate", .module = flate_mod },
+            .{ .name = "zcompress", .module = zcompress_mod },
         },
     });
     const flate_example = b.addExecutable(.{
@@ -129,7 +104,7 @@ pub fn build(b: *Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "flate", .module = flate_mod },
+            .{ .name = "zcompress", .module = zcompress_mod },
         },
     });
     const flate_oracle = b.addExecutable(.{
@@ -159,36 +134,22 @@ pub fn build(b: *Build) void {
     run_flate_example_tests.has_side_effects = true;
     test_step.dependOn(&run_flate_example_tests.step);
 
-    // Unit tests: one test executable per module.
-    const snappy_tests = b.addTest(.{
-        .root_module = snappy_mod,
-        .test_runner = test_runner,
-    });
-    const run_snappy_tests = b.addRunArtifact(snappy_tests);
-    run_snappy_tests.has_side_effects = true; // always run tests, don't cache
-    test_step.dependOn(&run_snappy_tests.step);
-    const flate_tests = b.addTest(.{
-        .root_module = flate_mod,
-        .test_runner = test_runner,
-    });
-    const run_flate_tests = b.addRunArtifact(flate_tests);
-    run_flate_tests.has_side_effects = true; // always run tests, don't cache
-    test_step.dependOn(&run_flate_tests.step);
+    // Unit tests: one test executable over the one module. The codec
+    // suites, their shared-layer consumers, and the barrel's own tests all
+    // land in one binary; ztest still reports each test by name.
     const zcompress_tests = b.addTest(.{
         .root_module = zcompress_mod,
         .test_runner = test_runner,
     });
     const run_zcompress_tests = b.addRunArtifact(zcompress_tests);
-    run_zcompress_tests.has_side_effects = true;
+    run_zcompress_tests.has_side_effects = true; // always run tests, don't cache
     test_step.dependOn(&run_zcompress_tests.step);
 
-    // Compile-only gate: compiles the codec test binaries without running
-    // them, for cross-target checks (the portable fallbacks only compile on
+    // Compile-only gate: compiles the module's test binary without running
+    // it, for cross-target checks (the portable fallbacks only compile on
     // non-native targets):
     //   zig build check -Dtarget=x86_64-linux
     const check_step = b.step("check", "Compile the tests without running (cross-target gate)");
-    check_step.dependOn(&snappy_tests.step);
-    check_step.dependOn(&flate_tests.step);
     check_step.dependOn(&zcompress_tests.step);
 
     // Benchmarks. The benchmark dependency is lazy: b.lazyImport fetches it
@@ -210,7 +171,7 @@ pub fn build(b: *Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "snappy", .module = snappy_mod },
+                .{ .name = "zcompress", .module = zcompress_mod },
                 .{ .name = "fastmem", .module = fastmem_mod },
             },
         });
@@ -225,7 +186,7 @@ pub fn build(b: *Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "flate", .module = flate_mod },
+                .{ .name = "zcompress", .module = zcompress_mod },
                 .{ .name = "fastmem", .module = fastmem_mod },
             },
         });

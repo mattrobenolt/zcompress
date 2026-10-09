@@ -1,8 +1,8 @@
-//! Raw DEFLATE (RFC 1951) codec. Imports only `std` and `fastmem`. Exposed as
-//! its own build module (`flate`) and re-exported by the zcompress umbrella
-//! module: a full inflate (stored, fixed, and dynamic blocks), the fast
-//! fixed-Huffman encoder, and the streaming `Io` layer (`Reader`/`Writer`)
-//! over raw deflate — caller-owned buffers, zero heap allocation, end to end.
+//! Raw DEFLATE (RFC 1951) codec. Imports only `std` and `fastmem`. The
+//! `zcompress.flate` namespace of the zcompress module: a full inflate
+//! (stored, fixed, and dynamic blocks), the fast fixed-Huffman encoder, and
+//! the streaming `Io` layer (`Reader`/`Writer`) over raw deflate —
+//! caller-owned buffers, zero heap allocation, end to end.
 //!
 //! The public surface is four names — everything else composes through
 //! their namespaces: `encode.compress`, `encode.maxCompressedLength`,

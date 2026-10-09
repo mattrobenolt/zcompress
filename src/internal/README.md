@@ -5,12 +5,15 @@ The codec-agnostic layer a zcompress codec may import
 `fastmem`, holds no codec-specific state, and travels with a codec that uses
 it. Nothing lands here before two codecs need it.
 
-`build.zig` wires it as the private `internal` module; the codec modules
-import it and the umbrella module (`src/root.zig`) and the codec barrels
-never re-export it. A codec lifts out of the repo with `src/internal/` in
-tow, wired the same way: a scratch project holding the codec directory,
-`src/internal/`, and the fastmem dependency builds and runs the codec's
-tests.
+Codec files import it relatively (`@import("../internal/root.zig")`); there
+is no `internal` build module, and neither the barrel (`src/root.zig`) nor
+the codec namespaces re-export it. A codec lifts out of the repo with
+`src/internal/` in tow, wired the same way: a scratch project holding the
+codec directory, `src/internal/`, and the fastmem dependency builds and
+runs the codec's tests. The scratch project needs a root file above both
+directories (the repo's `src/root.zig` is that file): relative imports
+cannot escape the module root's directory, so rooting the module at the
+codec's own `root.zig` fails with "import of file outside module path".
 
 Two namespaces:
 
@@ -166,7 +169,8 @@ never a false success on a truncated stream.
 ## API
 
 ```zig
-const internal = @import("internal");
+// From a codec file under src/<codec>/:
+const internal = @import("../internal/root.zig");
 
 // The decode-overrun sentinel: fill, then prove [decoded_len, target.len)
 // still holds the cycle.

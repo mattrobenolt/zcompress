@@ -20,7 +20,7 @@ const DefaultPrng = std.Random.DefaultPrng;
 
 const fastmem = @import("fastmem");
 
-const internal = @import("internal");
+const internal = @import("../internal/root.zig");
 const common = @import("common.zig");
 const readInt = common.readInt;
 const decode = @import("decode.zig");

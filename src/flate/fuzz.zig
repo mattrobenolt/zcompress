@@ -45,7 +45,7 @@ const Smith = testing.Smith;
 
 const fastmem = @import("fastmem");
 
-const internal = @import("internal");
+const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");

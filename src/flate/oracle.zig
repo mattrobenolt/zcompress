@@ -16,7 +16,7 @@ const std = @import("std");
 const Io = std.Io;
 const print = std.debug.print;
 
-const flate = @import("flate");
+const flate = @import("zcompress").flate;
 
 /// Cap on the compressed stream the harness will read into memory.
 const max_stream_len = 1 << 30;

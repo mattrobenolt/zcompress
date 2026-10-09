@@ -17,7 +17,7 @@ const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
 const cli = @import("cli");
-const snappy = @import("snappy");
+const snappy = @import("zcompress").snappy;
 
 pub fn main(init: std.process.Init) !u8 {
     return cli.run(.{

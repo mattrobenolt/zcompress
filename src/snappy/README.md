@@ -2,8 +2,8 @@
 
 A standalone Snappy raw-block codec in pure Zig — a hash-table match-finder
 encoder and a SIMD-accelerated decoder. Imports only `std` and `fastmem`; no
-heap allocation on any codec path. Exposed as the `snappy` build module and
-re-exported as `zcompress.snappy`.
+heap allocation on any codec path. The `zcompress.snappy` namespace of the
+zcompress module.
 
 This implements the [Snappy block format][format]. The block functions have
 no framing; the streaming layer (`Reader`/`Writer`, below) adds one — this
@@ -18,7 +18,7 @@ The public surface is four names — everything else composes through their
 namespaces:
 
 ```zig
-const snappy = @import("snappy");
+const snappy = @import("zcompress").snappy;
 
 // The block encoder (snappy.encode):
 snappy.encode.compressBlock(source, target) error{BufferTooSmall}!usize

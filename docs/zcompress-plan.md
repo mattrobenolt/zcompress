@@ -4,8 +4,9 @@
 
 zcompress gives Zig fast compression codecs. The performance class is
 klauspost/compress. The usability class is std.compress. Every codec is a
-self-contained module that builds alone. Every performance claim is measured,
-and every number names its evidence.
+self-contained directory that builds alone, with the shared `src/internal/`
+layer in tow. Every performance claim is measured, and every number names its
+evidence.
 
 Pure Zig: SIMD work uses `@Vector`, `@shuffle`, `@select`, and `std.simd`.
 Memory copies go through fastmem, the same-author fast memcpy/memmove/memset
@@ -63,16 +64,26 @@ value and the smallest effort, so it goes last.
 
 ### Modules
 
-One directory and one build module per codec, under `src/`. A codec imports
-only `std` and `fastmem`. The umbrella module (`src/root.zig`) re-exports
-each codec module. A codec lifts out of the repo with its directory and the
-fastmem dependency.
+One directory per codec under `src/`, and ONE build module for the whole
+library: `zcompress`, rooted at `src/root.zig` (owner's call, 2026-10-09).
+The barrel re-exports each codec directory as a namespace
+(`zcompress.snappy`, `zcompress.flate`), so the consumer surface is
+`zcompress.<codec>.<name>` and there is no module graph to keep in sync.
+Codecs import only `std` and `fastmem`, plus in-repo relative imports: a
+container imports the codec it wraps (gzip/zlib over flate, M3) by relative
+path.
 
 A shared `src/internal/` layer may hold codec-agnostic primitives (history
 windows, match-finder skeletons, checksum kernels, huffman tables). Rules: it
 imports only `std` and `fastmem`; it holds no codec-specific state; a codec
 that uses it lifts with `internal/` in tow. Nothing lands there before two
 codecs need it.
+
+The lift story: a codec directory plus `src/internal/`, under one module
+root — a two-line barrel file, exactly what `src/root.zig` is — build and
+test alone against the fastmem dependency, importing each other relatively,
+with no build-graph surgery. The root file must be an ancestor of both
+directories: relative imports cannot escape the module root's directory.
 
 ### API layers
 
@@ -248,6 +259,9 @@ variants; vendor those spec sections at M6).
   (2026-10-08).
 - No `@memcpy`/`@memmove`/`@memset` anywhere in this repo's source —
   `fastmem.copy`/`move`/`set` only (2026-10-08).
+- One `zcompress` build module, codecs as namespaces under it, `src/internal/`
+  reached by relative import (2026-10-09, owner's call). The retired wiring
+  was one build module per codec plus a private `internal` module.
 
 ## Decisions deferred
 

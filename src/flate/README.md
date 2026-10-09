@@ -3,8 +3,7 @@
 A standalone raw DEFLATE (RFC 1951) codec in pure Zig — a fast fixed-Huffman
 encoder in the klauspost level-1 class and a full inflate (stored, fixed, and
 dynamic blocks). Imports only `std` and `fastmem`; no heap allocation on any
-codec path. Exposed as the `flate` build module and re-exported as
-`zcompress.flate`.
+codec path. The `zcompress.flate` namespace of the zcompress module.
 
 The format is [RFC 1951][rfc1951], vendored verbatim at
 `docs/research/specs/rfc1951-deflate.txt`. The research stage — the
@@ -42,7 +41,7 @@ them: `flate.encode` (block encoding), `flate.decode` (block decoding),
 `flate.Writer` (streaming encode), `flate.Reader` (streaming decode).
 
 ```zig
-const flate = @import("flate");
+const flate = @import("zcompress").flate;
 
 // The block encoder (flate.encode):
 flate.encode.max_block_size      // 65535, the stored-block LEN cap (§3.2.4);

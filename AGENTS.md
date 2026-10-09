@@ -7,7 +7,9 @@ it before you change a kernel or make a performance claim.
 
 ## Layout
 
-- `src/root.zig`: the umbrella module. One pub decl per codec.
+- `src/root.zig`: the barrel of the ONE `zcompress` build module. One pub
+  decl per codec, each a namespace under it (`zcompress.snappy`,
+  `zcompress.flate`).
 - `src/snappy/`: raw-block snappy, with fastmem wired into its copy paths.
   `encode.zig` ports the klauspost encoder algorithm (THIRD_PARTY.md);
   `decode.zig` is original, with golden vectors in `golden.zig` (ported
@@ -28,10 +30,13 @@ it before you change a kernel or make a performance claim.
   Fuzz targets land in `fuzz.zig` (fuzz-engineer lane).
 - `src/internal/`: the codec-agnostic shares (plan, "Architecture"): the
   sentinel test machinery and the reader lifecycle + generated vtable
-  entries. Imports only `std` and `fastmem`; wired as a private build
-  module, never re-exported through the umbrella or a codec barrel; a codec
-  that uses it lifts with it in tow. `src/internal/README.md` is the Io
-  codec pattern book every new codec's README-first sketch cites.
+  entries. Imports only `std` and `fastmem`; reached by relative import
+  (`@import("../internal/root.zig")`), never a build module, and never
+  re-exported by the barrel; a codec that uses it lifts with it in tow,
+  under a module root above both directories (relative imports cannot
+  escape the module root's directory).
+  `src/internal/README.md` is the Io codec pattern book every new codec's
+  README-first sketch cites.
 - `docs/research/specs/`: vendored specs (RFC 1950/1951/1952, RFC 8878, the
   snappy format description) with provenance.
 - `examples/`: one CLI per codec, thin streaming pumps (`encode`/`decode`)
@@ -127,10 +132,11 @@ Deviations, on purpose:
 - README-first: each codec directory carries its own `README.md` documenting
   the public API. Write it before the implementation — it is the API sketch
   Matt reviews. An API change updates the module README in the same commit.
-- A codec imports only `std` and `fastmem` (plus the in-repo `internal`
-  module when a second codec shares the shape — `src/internal/README.md`).
-  No cross-codec imports; shared
-  primitives go to `src/internal/` only when two codecs need them.
+- A codec imports only `std` and `fastmem`, plus in-repo relative imports:
+  the codec-agnostic `src/internal/` shares when a second codec needs the
+  shape (`src/internal/README.md`), and the codec it wraps (gzip/zlib over
+  flate, M3). Shared primitives go to `src/internal/` only when two codecs
+  need them.
 - Zero heap allocation on codec hot paths. Caller owns buffers; setup
   allocation is documented at the API. Streaming layers take no allocator at
   all: caller-provided buffers through exported named buffer types
@@ -141,10 +147,12 @@ Deviations, on purpose:
   asserts.
 - A single `*Io.Reader`/`*Io.Writer` param is named `input`/`output` (the
   `std.compress.flate` precedent); `in`/`out` name reader/writer pairs.
-- The umbrella barrel exposes exactly `{Reader, Writer, encode, decode}` —
+- The barrel (`src/root.zig`) exposes exactly one namespace per codec, and
+  each namespace exposes exactly `{Reader, Writer, encode, decode}` —
   everything else composes through those namespaces
-  (`snappy.encode.compressBlock`, `snappy.Reader.streamAll`,
-  `snappy.Writer.Buffer`). No flat re-export menu at the root.
+  (`zcompress.snappy.encode.compressBlock`,
+  `zcompress.snappy.Reader.streamAll`, `zcompress.flate.Writer.Buffer`).
+  No flat re-export menu at the root.
 - CamelCase API names spell `Length` unabbreviated
   (`maxCompressedLength`, `decompressedBlockLength`); snake_case
   identifiers keep `len` (std's `.len` convention: `scratch_len`,

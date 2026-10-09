@@ -14,7 +14,7 @@ const DefaultPrng = std.Random.DefaultPrng;
 const fastmem = @import("fastmem");
 
 const bench = @import("benchmark");
-const snappy = @import("snappy");
+const snappy = @import("zcompress").snappy;
 
 /// Input corpus shapes. Each returns a freshly-allocated buffer the benchmark
 /// is responsible for freeing (once, in setup — not in the timed loop).
