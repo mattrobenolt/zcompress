@@ -5,12 +5,17 @@
 
 const std = @import("std");
 
+/// Raw DEFLATE (RFC 1951) codec. One-shot inflate over caller-owned buffers,
+/// zero heap allocation. API and design: `src/flate/README.md`; format:
+/// docs/research/specs/rfc1951-deflate.txt.
+pub const flate = @import("flate");
 /// Raw-block Snappy codec. Block functions over caller-owned buffers, zero
 /// heap allocation. API and design: `src/snappy/README.md`; format:
 /// docs/research/specs/snappy-format-description.txt.
 pub const snappy = @import("snappy");
 
 test {
+    _ = flate;
     _ = snappy;
     std.testing.refAllDecls(@This());
 }

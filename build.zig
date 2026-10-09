@@ -28,6 +28,13 @@ pub fn build(b: *Build) void {
     });
     snappy_mod.addImport("fastmem", fastmem_mod);
 
+    const flate_mod = b.addModule("flate", .{
+        .root_source_file = b.path("src/flate/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    flate_mod.addImport("fastmem", fastmem_mod);
+
     // The umbrella module re-exports each codec.
     const zcompress_mod = b.addModule("zcompress", .{
         .root_source_file = b.path("src/root.zig"),
@@ -35,6 +42,7 @@ pub fn build(b: *Build) void {
         .optimize = optimize,
     });
     zcompress_mod.addImport("snappy", snappy_mod);
+    zcompress_mod.addImport("flate", flate_mod);
 
     // ztest: plain-text test runner. Lazy — only fetched when the test step
     // is actually built, not when consumers use zcompress as a dependency.
@@ -76,6 +84,28 @@ pub fn build(b: *Build) void {
     );
     snappy_example_step.dependOn(&run_snappy_example.step);
 
+    // External-oracle harness (src/flate/oracle.zig): decodes one stream from
+    // a file into a caller-sized buffer, for the `just flate-oracle` lane.
+    // Installed, not part of the module surface or the test/check steps.
+    const flate_oracle_mod = b.createModule(.{
+        .root_source_file = b.path("src/flate/oracle.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "flate", .module = flate_mod },
+        },
+    });
+    const flate_oracle = b.addExecutable(.{
+        .name = "flate-oracle",
+        .root_module = flate_oracle_mod,
+    });
+    const install_flate_oracle = b.addInstallArtifact(flate_oracle, .{});
+    const flate_oracle_step = b.step(
+        "flate-oracle-harness",
+        "Install the flate oracle-lane harness (zig-out/bin/flate-oracle)",
+    );
+    flate_oracle_step.dependOn(&install_flate_oracle.step);
+
     // The example's framing test runs with the unit tests.
     const snappy_example_tests = b.addTest(.{
         .root_module = snappy_example_mod,
@@ -93,6 +123,13 @@ pub fn build(b: *Build) void {
     const run_snappy_tests = b.addRunArtifact(snappy_tests);
     run_snappy_tests.has_side_effects = true; // always run tests, don't cache
     test_step.dependOn(&run_snappy_tests.step);
+    const flate_tests = b.addTest(.{
+        .root_module = flate_mod,
+        .test_runner = test_runner,
+    });
+    const run_flate_tests = b.addRunArtifact(flate_tests);
+    run_flate_tests.has_side_effects = true; // always run tests, don't cache
+    test_step.dependOn(&run_flate_tests.step);
     const zcompress_tests = b.addTest(.{
         .root_module = zcompress_mod,
         .test_runner = test_runner,
@@ -107,6 +144,7 @@ pub fn build(b: *Build) void {
     //   zig build check -Dtarget=x86_64-linux
     const check_step = b.step("check", "Compile the tests without running (cross-target gate)");
     check_step.dependOn(&snappy_tests.step);
+    check_step.dependOn(&flate_tests.step);
     check_step.dependOn(&zcompress_tests.step);
 
     // Benchmarks. The benchmark dependency is lazy: b.lazyImport fetches it

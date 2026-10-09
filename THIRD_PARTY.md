@@ -14,6 +14,21 @@ and dependency with a license that is not ours.
   (BSD-3-Clause) `TestDecode`, `TestDecodeCopy4`, and `TestDecodeLengthOffset`
   tables. Attribution: Copyright the Go Authors,
   https://github.com/golang/snappy (decode_test.go).
+- `src/flate/golden.zig` golden fixtures: ported from golang/go
+  (BSD-3-Clause) `src/compress/flate/flate_test.go` (`TestStreams`,
+  `TestTruncatedStreams`), `inflate_test.go` (`TestReaderTruncated`), and
+  `deflate_test.go` (`deflateTests`, as decode goldens). Attribution:
+  Copyright the Go Authors, https://github.com/golang/go.
+- `src/flate/testdata/huffman-*`: the nine `.in`/`.golden` pairs vendored
+  verbatim from golang/go (BSD-3-Clause)
+  `src/compress/flate/testdata/`. Attribution: Copyright the Go Authors,
+  https://github.com/golang/go.
+- `src/flate/decode.zig` lineage: the two-level Huffman decode table (a
+  9-bit primary table plus a chained chase for longer codes) follows the
+  algorithm in zlib's `doc/algorithm.txt` (zlib license, studied), as used by
+  Zig std's `std.compress.flate.Decompress.zig` (MIT, in-tree, studied).
+  Reimplemented in this package's shape — wire-bit orientation, table
+  packing, chain layout, and the completeness rules are ours; no code copied.
 
 ## Vendored specs (`docs/research/specs/`)
 
