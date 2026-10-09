@@ -628,28 +628,6 @@ pub fn writeFinalEmptyBlock(w: *BitWriter) error{BufferTooSmall}!void {
     try w.writeCode(fixed_literal_codes[256]);
 }
 
-/// Compress `source[block_start..block_end]` into `w`: fixed Huffman when its
-/// payload beats the stored form, stored otherwise (README, "Encoder").
-/// Matches may reach `history_len` bytes back into `source` itself — the
-/// one-shot path's history is the source, and the streaming Writer's is the
-/// retained tail of its window — so a match crosses block boundaries exactly
-/// as the format allows (`§3.2.3`).
-pub fn compressBlock(
-    source: []const u8,
-    block_start: usize,
-    block_end: usize,
-    w: *BitWriter,
-) error{BufferTooSmall}!void {
-    // The block-scoped table, zeroed through fastmem: `@splat` lowers to the
-    // scalar compiler-rt memset on aarch64, which cost the snappy encoder 3x.
-    // The streaming Writer and `compress` carry a persistent table instead
-    // (see `FinderTable`); this entry point keeps a fresh, densely primed
-    // table per call.
-    var table: FinderTable = undefined;
-    fastmem.set(u32, &table, 0);
-    try compressBlockStateful(source, block_start, block_end, w, &table, 0, 1, false);
-}
-
 /// The streaming Writer's block encode: the shared block path over the
 /// Writer's persistent table (zeroed once per stream), with the stream's
 /// priming stride. `base` is the absolute stream position of `source[0]` —
@@ -828,44 +806,12 @@ fn expectSentinels(target: []const u8, decoded_len: usize) !void {
 
 /// The final empty fixed block's ten bits, in wire order (LSB of this value is
 /// the first bit on the wire): BFINAL=1, BTYPE=01, then the end-of-block code.
-const final_empty_block_bits: u10 = 0b0000000011;
-
-fn bitAt(stream: []const u8, bit: usize) u1 {
-    return @intCast((stream[bit / 8] >> @intCast(bit % 8)) & 1);
-}
-
-/// `count` bits of `stream` from `bit`, LSB-of-value first.
-fn readBits(stream: []const u8, bit: usize, comptime count: u6) u64 {
-    var value: u64 = 0;
-    for (0..count) |i| value |= @as(u64, bitAt(stream, bit + i)) << @intCast(i);
-    return value;
-}
-
 /// Assert the stream's last block is the final empty fixed block (README,
 /// "Divergences" T4): bits `1,1,0,0,0,0,0,0,0,0` — BFINAL=1, BTYPE=01,
 /// end-of-block — zero-padded to the byte boundary. The ending's start depends
 /// on the last data block's bit offset, so it is located from the stream's
 /// last set bit: that is the ending's BTYPE low bit, and everything after it
 /// (the end-of-block's seven zeros and the padding) is clear. Shared with the
-/// streaming `Writer`'s tests, whose streams must end the same way.
-pub fn expectFinalEmptyBlock(stream: []const u8) !void {
-    const total_bits = stream.len * 8;
-    var last_set: ?usize = null;
-    var bit = total_bits;
-    while (bit > 0) {
-        bit -= 1;
-        if (bitAt(stream, bit) != 0) {
-            last_set = bit;
-            break;
-        }
-    }
-    const p = last_set orelse return error.TestUnexpectedResult;
-    try testing.expect(p >= 1);
-    try testing.expectEqual(final_empty_block_bits, readBits(stream, p - 1, 10));
-    // At most seven zero bits of padding follow the ten ending bits.
-    try testing.expect(total_bits - (p - 1) <= 10 + 7);
-}
-
 /// Compress `input`, check the sizing contract and the T4 ending, then decode
 /// with the landed decoder and prove the bytes past the decoded length are
 /// untouched.
@@ -876,7 +822,7 @@ fn roundTrip(input: []const u8) !void {
     defer allocator.free(comp);
     const clen = try compress(input, comp, .{});
     try testing.expect(clen <= bound);
-    try expectFinalEmptyBlock(comp[0..clen]);
+    try golden.expectFinalEmptyBlock(comp[0..clen]);
 
     const target = try allocator.alloc(u8, input.len + overrun_len);
     defer allocator.free(target);
@@ -959,6 +905,87 @@ test "compress: the stored-only level emits stored blocks" {
     try testing.expectEqualSlices(u8, "hello, flate!", decoded[0..dn]);
 }
 
+test "matchCandidate: the position edge cases of the absolute-entry arithmetic" {
+    // A uniform source (every byte equal) makes the 4-byte confirm always
+    // pass, so each row isolates the accept/reject logic: distance 0,
+    // exactly history_len, past the cap, a wrapped-around 4-GiB entry
+    // landing in-window, an entry ahead of `s`, and the windowed front.
+    // Spec: rfc1951-deflate.txt §3.2.5 (a distance is at most 32768).
+    var src_buf: [70_000]u8 = undefined;
+    fastmem.set(u8, &src_buf, 'a');
+    const src: []const u8 = &src_buf;
+    const s_index: usize = 40_000;
+    const s_absolute: u32 = 40_000;
+    const e = load32(src, s_index);
+
+    // Distance 0 (entry == s): rejected.
+    try testing.expectEqual(@as(?usize, null), matchCandidate(
+        src,
+        s_index,
+        s_absolute,
+        s_absolute,
+        e,
+        false,
+    ));
+    // Exactly history_len: accepted.
+    try testing.expectEqual(
+        @as(?usize, s_index - history_len),
+        matchCandidate(src, s_index, s_absolute, s_absolute - history_len, e, false),
+    );
+    // history_len + 1: rejected.
+    try testing.expectEqual(@as(?usize, null), matchCandidate(
+        src,
+        s_index,
+        s_absolute,
+        s_absolute - history_len - 1,
+        e,
+        false,
+    ));
+    // A wrapped-around entry: distance 16 lands in-window.
+    try testing.expectEqual(
+        @as(?usize, s_index - 16),
+        matchCandidate(src, s_index, 5, std.math.maxInt(u32) - 10, e, false),
+    );
+    // An entry ahead of `s` (wraps to a huge distance): rejected.
+    try testing.expectEqual(
+        @as(?usize, null),
+        matchCandidate(src, s_index, 100, 101, e, false),
+    );
+    // Windowed: a distance past the source front (into dropped history) is
+    // rejected; equal to the front names position 0.
+    try testing.expectEqual(
+        @as(?usize, null),
+        matchCandidate(src, 10, 50_010, 100, e, true),
+    );
+    try testing.expectEqual(
+        @as(?usize, 0),
+        matchCandidate(src, 10, 50_010, 50_000, e, true),
+    );
+}
+
+test "matchCandidate: a garbage-filled table stays exact on the windowed path" {
+    // The table is only hints: a stale entry fails the cap, a wrapped entry
+    // lands in-window where the confirm decides, and the windowed check
+    // rejects dropped history — every emitted match is byte-verified.
+    var src_buf: [70_000]u8 = undefined;
+    fastmem.set(u8, &src_buf, 'a');
+    const src: []const u8 = &src_buf;
+    var rng: DefaultPrng = .init(0xDEADBEEF);
+    for (0..64) |i| {
+        const s_index: usize = 1 + (i * 1000) % 60_000;
+        const s_absolute: u32 = @truncate(500_000 + s_index);
+        const entry = rng.random().int(u32);
+        const candidate = matchCandidate(src, s_index, s_absolute, entry, 0, true);
+        if (candidate) |c| {
+            // Whatever the entry, an accepted candidate names a real
+            // in-window position with four equal bytes.
+            try testing.expect(c < s_index);
+            try testing.expect(s_index - c <= history_len);
+            try testing.expectEqual(load32(src, c), load32(src, s_index));
+        }
+    }
+}
+
 test "compress: empty input is the final empty block" {
     // Spec: rfc1951-deflate.txt §3.2.3 — "BFINAL is set if and only if this is
     // the last block of the data set", and README "Divergences" T4: the stream
@@ -1039,37 +1066,6 @@ test "compress: round trips across block boundaries" {
     }
 }
 
-test "compressBlock: the block-at-a-time entry round trips" {
-    // The pub block entry keeps its own fresh, densely primed table; three
-    // blocks of a repeated phrase exercise its cross-block history window,
-    // and the stream decodes exactly.
-    const allocator = testing.allocator;
-    const phrase = "the quick brown fox jumps over the lazy dog. ";
-    const input = try allocator.alloc(u8, 3 * max_block_size);
-    defer allocator.free(input);
-    for (0..input.len / phrase.len) |i| {
-        fastmem.copy(u8, input[i * phrase.len ..][0..phrase.len], phrase);
-    }
-
-    const comp = try allocator.alloc(u8, maxCompressedLength(input.len));
-    defer allocator.free(comp);
-    var w: BitWriter = .{ .target = comp };
-    var block_start: usize = 0;
-    while (block_start < input.len) {
-        const block_end = @min(block_start + max_block_size, input.len);
-        try compressBlock(input, block_start, block_end, &w);
-        block_start = block_end;
-    }
-    try writeFinalEmptyBlock(&w);
-    try w.finish();
-
-    const back = try allocator.alloc(u8, input.len);
-    defer allocator.free(back);
-    const n = try decode.decompress(comp[0..w.pos], back);
-    try testing.expectEqual(input.len, n);
-    try testing.expectEqualSlices(u8, input, back);
-}
-
 test "compress: many blocks round trip (1 MiB)" {
     // Sixteen blocks of text (cross-block matches across many boundaries) and
     // of incompressible bytes (all stored), with the sizing contract checked
@@ -1111,7 +1107,7 @@ test "compress: maxCompressedLength bounds every emission" {
                 return err;
             };
             try testing.expect(clen <= bound);
-            try expectFinalEmptyBlock(comp[0..clen]);
+            try golden.expectFinalEmptyBlock(comp[0..clen]);
         }
     }
 

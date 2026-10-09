@@ -43,6 +43,8 @@ Verbatim spec text, fetched once with provenance recorded in the directory
 `README.md`. IETF RFCs are freely distributed. The Snappy format description
 comes from google/snappy (BSD-3-Clause).
 
+- std.compress.flate `Lookup`/persistent-chain design (Zig std, MIT): studied for `src/flate/encode.zig`'s persistent `FinderTable` (absolute wrapping positions, flate-notes.md §8). Studied, not copied.
+
 ## Dependencies
 
 - fastmem (`https://github.com/mattrobenolt/fastmem-zig`, MIT): the blessed

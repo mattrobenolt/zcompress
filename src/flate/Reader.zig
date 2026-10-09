@@ -432,9 +432,12 @@ fn guard(r: *Reader) ?Io.Reader.Error {
 
 fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
     _ = w;
-    _ = limit;
     const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
     if (guard(parent)) |err| return err;
+    // A zero-length request is a poll (std calls vtable stream at limit 0
+    // when the buffer is nonempty): answer 0 without filling — a fill could
+    // fail `StreamTooLong` on a valid stream with buffered output.
+    if (limit == .nothing) return 0;
     // The data lands in the window, not in `w` (the vtable's "store data in
     // `buffer`, modifying `seek` and `end`" mode), so the count is 0: the
     // caller's next call serves the buffered bytes.
@@ -879,6 +882,31 @@ test "Reader: a consumer scanning for a delimiter past the window fails closed" 
     r.reader.toss(1);
     try testing.expectError(error.ReadFailed, r.reader.takeDelimiterExclusive('\n'));
     try testing.expectEqual(Error.StreamTooLong, r.err.?);
+}
+
+test "Reader: a zero-length stream poll does not fail the stream" {
+    // std calls vtable stream at limit 0 when the buffer is nonempty: the
+    // poll must answer 0 without filling (a fill could fail StreamTooLong
+    // on a valid stream with buffered output).
+    const gpa = testing.allocator;
+    const src = "the quick brown fox jumps over the lazy dog. " ** 6000;
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var wbuf: Writer.Buffer = undefined;
+    var w: Writer = .init(&out.writer, &wbuf, .{});
+    try w.writer.writeAll(src);
+    try w.finish();
+
+    var rbuf: Buffer = undefined;
+    var fixed_in: Io.Reader = .fixed(out.written());
+    var r: Reader = .init(&fixed_in, &rbuf);
+    _ = try r.reader.peek(1);
+    var sink: Io.Writer.Discarding = .init(&.{});
+    try testing.expectEqual(@as(usize, 0), try r.reader.stream(&sink.writer, .limited(0)));
+    try testing.expect(r.err == null);
+    const got = try r.reader.allocRemaining(gpa, .unlimited);
+    defer gpa.free(got);
+    try testing.expectEqualSlices(u8, src, got);
 }
 
 test "Reader: a stream ends cleanly and stickily" {

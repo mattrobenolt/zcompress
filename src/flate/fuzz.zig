@@ -115,12 +115,12 @@ fn implementedLevel(smith: *Smith) encode.Level {
 }
 
 /// README "Divergences" T4, `§3.2.3` — every stream ends with the final empty
-/// fixed block: BFINAL=1, BTYPE=01, end-of-block. `encode.expectFinalEmptyBlock`
+/// fixed block: BFINAL=1, BTYPE=01, end-of-block. `golden.expectFinalEmptyBlock`
 /// pins the ten ending bits; when the ending lands byte-aligned (every stored
 /// block, and any fixed block whose payload ends on a byte) those ten bits are
 /// the literal last two bytes, `03 00`.
 fn expectT4Ending(stream: []const u8) !void {
-    try encode.expectFinalEmptyBlock(stream);
+    try golden.expectFinalEmptyBlock(stream);
     const total_bits = stream.len * 8;
     var bit = total_bits;
     var last_set: usize = 0;
@@ -197,6 +197,7 @@ fn streamSeed(comptime stream: []const u8) [8 + 4 + stream.len]u8 {
 /// level `smith.value(encode.Level)` consumes, then the `u32-le` length plus
 /// bytes `smith.slice` consumes.
 fn sliceSeed(comptime level: u64, comptime bytes: []const u8) [12 + bytes.len]u8 {
+    @setEvalBranchQuota(10_000);
     var seed: [12 + bytes.len]u8 = undefined;
     std.mem.writeInt(u64, seed[0..8], level, .little);
     std.mem.writeInt(u32, seed[8..12], @intCast(bytes.len), .little);
@@ -578,7 +579,9 @@ fn fuzzStreamRoundTrip(_: void, smith: *Smith) anyerror!void {
 /// matches across blocks.
 const stream_corpus: []const []const u8 = &.{
     &sliceSeed(0, "the quick brown fox " ** 8),
-    &sliceSeed(2, ""), // stored-only, empty input
+    // implementedLevel maps pick 1 to the stored-only .@"0" (pick+1 is the
+    // Level backing int: 2 = .@"0"), with real content so stored blocks emit.
+    &sliceSeed(1, "z" ** 1024),
 };
 
 test "flate fuzz: stream round trip" {

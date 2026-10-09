@@ -221,7 +221,8 @@ shift-add per symbol — which is why zlib-ng's fastest level is fixed-only
 dynamic's ~5), so a dynamic-Huffman ratio mode is deferred: klauspost L1 and
 libdeflate L1 both pay for dynamic headers at their fastest level and still
 lead the speed class, and the fleet decides whether the fast level gains a
-dynamic sibling. This API reserves no level parameter for it.
+dynamic sibling; `Level.ratio` reserves the seat with
+`error.Unimplemented` — never silent aliasing (see the API block above).
 
 The match finder is the klauspost-L1 shape (OQ3), the snappy encoder's
 sibling: the shape below is flate-notes.md §5.1's reading of
@@ -236,7 +237,7 @@ in `THIRD_PARTY.md`:
   klauspost L1, libdeflate L1, zlib-ng quick, zlib level 1, std level_1;
   flate-notes.md §5).
 - A 4-byte confirm after a hash hit, the snappy-style accelerating skip
-  (`nextS = s + 2 + (s - nextEmit) >> 5`), and backward extension into the
+  (`nextS = s + 3 + (s - nextEmit) >> 5`), and backward extension into the
   preceding literals so the literal run shrinks to the true match start.
 - Minimum match 4 (a 3-byte match costs a length and a distance symbol for
   three bytes; left to the ratio mode) and maximum distance 32768

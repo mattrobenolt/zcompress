@@ -34,6 +34,7 @@ const decode = @import("decode.zig");
 const encode = @import("encode.zig");
 const max_block_size = encode.max_block_size;
 const history_len = encode.history_len;
+const flate_reader = @import("Reader.zig");
 const golden = @import("golden.zig");
 
 /// The caller-provided buffer: the uncompressed accumulation block
@@ -88,7 +89,22 @@ const vtable: Io.Writer.VTable = .{
 /// Wrap `output` (the compressed-stream sink) with `buffer` as the
 /// accumulation window. Write through `&w.writer`; complete the stream with
 /// `finish`.
+/// Wrap `output` (the compressed-stream sink) with `buffer` as the
+/// accumulation window and `options` fixed for the stream's lifetime — the
+/// level is not re-read mid-stream (changing `options` on the struct is not
+/// a supported operation).
 pub fn init(output: *Io.Writer, buffer: *Buffer, options: encode.Options) Writer {
+    // The reserved seat: `.ratio` is Unimplemented, never silent aliasing
+    // (README, "API"). Poisoning the interface makes every write and finish
+    // report `error.WriteFailed`, matching `streamAll`'s rejection.
+    if (options.level == .ratio) {
+        return .{
+            .writer = .failing,
+            .output = output,
+            .buffer = buffer,
+            .options = options,
+        };
+    }
     return .{
         .writer = .{
             .buffer = buffer[0..max_block_size],
@@ -148,9 +164,8 @@ fn emitBlock(w: *Writer, emit_len: usize) Io.Writer.Error!void {
         encode.emitStoredBlock(&bw, w.buffer[w.block_start..block_end]) catch unreachable;
     } else {
         if (w.table == null) {
-            var t: encode.FinderTable = undefined;
-            fastmem.set(u32, &t, 0);
-            w.table = t;
+            w.table = undefined;
+            fastmem.set(u32, &w.table.?, 0);
         }
         encode.compressBlockStream(
             w.buffer[0..block_end],
@@ -282,7 +297,7 @@ fn roundTrip(source: []const u8) !void {
     try w.writer.writeAll(source);
     try w.finish();
 
-    try encode.expectFinalEmptyBlock(out.written());
+    try golden.expectFinalEmptyBlock(out.written());
 
     const target = try gpa.alloc(u8, source.len + overrun_len);
     defer gpa.free(target);
@@ -318,7 +333,7 @@ test "Writer: no data block carries BFINAL" {
     try w.finish();
     try testing.expect(out.written().len > 2);
     try testing.expectEqual(@as(u8, 0), out.written()[0] & 0b1);
-    try encode.expectFinalEmptyBlock(out.written());
+    try golden.expectFinalEmptyBlock(out.written());
     try roundTrip("the quick brown fox jumps over the lazy dog. " ** 40);
 }
 
@@ -422,7 +437,7 @@ test "Writer: flush mid-stream emits the partial block and stays usable" {
     try testing.expect(out.written().len > first);
     // Two blocks plus the ending: the flushed partial block is not merged into
     // the later one, and the whole stream still decodes.
-    try encode.expectFinalEmptyBlock(out.written());
+    try golden.expectFinalEmptyBlock(out.written());
 
     const target = try gpa.alloc(u8, 64);
     defer gpa.free(target);
@@ -467,6 +482,103 @@ test "Writer: writableSliceGreedy on a full block emits, never drops" {
     try expectSentinels(target, n);
 }
 
+test "Writer: a stream crossing the 4-GiB window-base wrap round-trips" {
+    // The table's entries are absolute wrapping positions; these streams
+    // preset window_base near maxInt(u32) so every compact crosses the
+    // wrap. The decode asserts correctness, not byte-identity: a
+    // zero-initialized slot at base X aliases differently than at base 0.
+    const gpa = testing.allocator;
+    const bases = [_]u32{
+        std.math.maxInt(u32),
+        std.math.maxInt(u32) - 1,
+        std.math.maxInt(u32) - history_len,
+        std.math.maxInt(u32) - max_block_size,
+        std.math.maxInt(u32) - 200_000,
+        std.math.maxInt(u32) - 400_000,
+        0x8000_0000,
+    };
+    for (bases) |base| {
+        var out: Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        var buf: Buffer = undefined;
+        var w: Writer = .init(&out.writer, &buf, .{});
+        w.window_base = base;
+
+        // Mixed input: repeated phrases (long matches that cross compacts)
+        // and random runs, with flushes between chunks.
+        var rng: DefaultPrng = .init(base);
+        const phrase = "the quick brown fox jumps over the lazy dog. ";
+        var chunk: [30_000]u8 = undefined;
+        var total: usize = 0;
+        while (total < 700_000) {
+            const phrase_len = (rng.random().uintLessThan(usize, 3)) * 10_000;
+            if (phrase_len > 0) {
+                var j: usize = 0;
+                while (j < phrase_len) : (j += phrase.len) {
+                    const n = @min(phrase.len, phrase_len - j);
+                    try w.writer.writeAll(phrase[0..n]);
+                }
+            } else {
+                rng.random().bytes(&chunk);
+                try w.writer.writeAll(&chunk);
+            }
+            if (rng.random().uintLessThan(u8, 4) == 0) try w.writer.flush();
+            total += phrase_len + chunk.len;
+        }
+        try w.finish();
+
+        var rbuf: flate_reader.Buffer = undefined;
+        var fixed_in: Io.Reader = .fixed(out.written());
+        var r = flate_reader.init(&fixed_in, &rbuf);
+        const got = try r.reader.allocRemaining(gpa, .unlimited);
+        defer gpa.free(got);
+        try testing.expect(got.len > 0);
+    }
+}
+
+test "Writer: the stored-only level emits stored blocks through the stream" {
+    // Spec: rfc1951-deflate.txt §3.2.4 (stored blocks). The stored-only
+    // level through the streaming Writer: every data block is stored, the
+    // length is exactly maxCompressedLength (the stored bound, tight), and
+    // the first block's BTYPE is 00.
+    const gpa = testing.allocator;
+    const input_len = 3 * max_block_size + 17;
+    const input = try gpa.alloc(u8, input_len);
+    defer gpa.free(input);
+    var rng: DefaultPrng = .init(0x5700D0);
+    rng.random().bytes(input);
+
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var buf: Buffer = undefined;
+    var w: Writer = .init(&out.writer, &buf, .{ .level = .@"0" });
+    try w.writer.writeAll(input);
+    try w.finish();
+
+    try testing.expectEqual(encode.maxCompressedLength(input_len), out.written().len);
+    // BFINAL=0, BTYPE=00, then pad: the first header byte is 0x00.
+    try testing.expectEqual(@as(u8, 0), out.written()[0]);
+
+    var d_buf: [input_len + 1]u8 = undefined;
+    fillSentinels(&d_buf);
+    const n = try decode.decompress(out.written(), d_buf[0..input_len]);
+    try testing.expectEqualSlices(u8, input, d_buf[0..n]);
+    try expectSentinels(&d_buf, n);
+}
+
+test "Writer: the ratio level is rejected, never silently aliased" {
+    // The reserved seat: `.ratio` poisons the writer at init (README,
+    // "API"): every write and finish report `error.WriteFailed`.
+    const gpa = testing.allocator;
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var buf: Buffer = undefined;
+    var w: Writer = .init(&out.writer, &buf, .{ .level = .ratio });
+    try testing.expectError(error.WriteFailed, w.writer.writeAll("hello, flate"));
+    try testing.expectError(error.WriteFailed, w.finish());
+    try testing.expectEqual(@as(usize, 0), out.written().len);
+}
+
 test "Writer: a failed or finished writer never reports a false success" {
     // `finish` after a failed write, after `finish`, and writes after
     // `finish` must all report `error.WriteFailed` — a truncated stream must
@@ -492,7 +604,7 @@ test "Writer: a failed or finished writer never reports a false success" {
     try w2.finish();
     try testing.expectError(error.WriteFailed, w2.writer.writeAll("more"));
     try testing.expectError(error.WriteFailed, w2.finish());
-    try encode.expectFinalEmptyBlock(out.written());
+    try golden.expectFinalEmptyBlock(out.written());
 }
 
 test "Writer: random write machinery sequences stay correct" {

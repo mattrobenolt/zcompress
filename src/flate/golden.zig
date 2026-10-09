@@ -561,6 +561,38 @@ pub const huffman_fixtures: [9]HuffmanFixture = .{
     },
 };
 
+/// streaming `Writer`'s tests, whose streams must end the same way.
+fn bitAt(stream: []const u8, bit: usize) u1 {
+    return @intCast((stream[bit / 8] >> @intCast(bit % 8)) & 1);
+}
+
+const final_empty_block_bits: u10 = 0b0000000011;
+
+/// `count` bits of `stream` from `bit`, LSB-of-value first.
+fn readBits(stream: []const u8, bit: usize, comptime count: u6) u64 {
+    var value: u64 = 0;
+    for (0..count) |i| value |= @as(u64, bitAt(stream, bit + i)) << @intCast(i);
+    return value;
+}
+
+pub fn expectFinalEmptyBlock(stream: []const u8) !void {
+    const total_bits = stream.len * 8;
+    var last_set: ?usize = null;
+    var bit = total_bits;
+    while (bit > 0) {
+        bit -= 1;
+        if (bitAt(stream, bit) != 0) {
+            last_set = bit;
+            break;
+        }
+    }
+    const p = last_set orelse return error.TestUnexpectedResult;
+    try testing.expect(p >= 1);
+    try testing.expectEqual(final_empty_block_bits, readBits(stream, p - 1, 10));
+    // At most seven zero bits of padding follow the ten ending bits.
+    try testing.expect(total_bits - (p - 1) <= 10 + 7);
+}
+
 test "golden decode: golang/go TestStreams" {
     // The primary conformance table: every degenerate dynamic-header corner,
     // the T2/T3 divergence rows, a raw stored block, and the
