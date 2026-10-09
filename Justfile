@@ -57,7 +57,7 @@ bench *ARGS:
 
 # Run an example CLI (e.g. just example snappy encode README.md > out)
 example example *args:
-    zig build example-{{ example }} -- {{ args }}
+    zig build -Doptimize=ReleaseFast example-{{ example }} -- {{ args }}
 
 # Clean build artifacts
 clean:
