@@ -1,0 +1,27 @@
+.{
+    .name = .zcompress,
+    .version = "0.0.0",
+    .fingerprint = 0xaf92519576a0fa8a, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .fastmem = .{
+            .url = "git+https://github.com/mattrobenolt/fastmem-zig?ref=main#247476ed4ab2f26acd3be052ce911fd1cf8a5a35",
+            .hash = "fastmem-0.0.0-W3bwd5ukBgDwwJRh-sbyj4nnmYJ0wLcqSXLXAUf6uzGJ",
+        },
+        .benchmark = .{
+            .url = "git+https://github.com/mattrobenolt/zig-benchmark?ref=main#5572317d18d1e5b4630950658b1628b4398a84a8",
+            .hash = "benchmark-0.1.0-JS72VhUcAQAM6gGwbJeMtNhbX7n8LQk4LIdSrRz9ljNg",
+            .lazy = true,
+        },
+        .ztest = .{
+            .url = "git+https://github.com/mattrobenolt/ztest?ref=main#d1a70d1e99d4e8751d5ceddfe8dcc761e7831aad",
+            .hash = "ztest-0.2.0-h6PBz_h1AAD8Z41oiZbR5aKo2xAzeqbuW9KIxfClUgwp",
+            .lazy = true,
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
