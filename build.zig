@@ -176,7 +176,23 @@ pub fn build(b: *Build) void {
         });
         if (b.args) |args| run_snappy_bench.addArgs(args);
 
+        const flate_bench_root = b.createModule(.{
+            .root_source_file = b.path("src/flate/bench.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "flate", .module = flate_mod },
+                .{ .name = "fastmem", .module = fastmem_mod },
+            },
+        });
+        const run_flate_bench = benchmark.addRunTest(b, .{
+            .dependency = benchmark_dep,
+            .root_module = flate_bench_root,
+        });
+        if (b.args) |args| run_flate_bench.addArgs(args);
+
         const bench_step = b.step("bench", "Run codec benchmarks (use -Doptimize=ReleaseFast)");
         bench_step.dependOn(&run_snappy_bench.step);
+        bench_step.dependOn(&run_flate_bench.step);
     }
 }

@@ -31,10 +31,13 @@ check-baseline:
     zig build check -Dtarget=riscv64-linux
     zig build check -Dtarget=wasm32-wasi
 
-# External-oracle lane for the flate decoder: python3's zlib cross-checks the
-# committed fixtures and freshly generated shapes in both directions, raw
-# deflate (wbits=-15) — the incantations of docs/research/flate-notes.md §4.3.
-# The decoder side runs through the harness built from src/flate/oracle.zig.
+# External-oracle lane for flate: python3's zlib cross-checks the committed
+# fixtures and freshly generated shapes in both directions, raw deflate
+# (wbits=-15) — the incantations of docs/research/flate-notes.md §4.3. Both
+# sides run through the harness built from src/flate/oracle.zig: the decode
+# direction (oracle encode -> our decode) and the encode direction (our encode
+# -> oracle decode), which is the only lane that catches a bit-packing bug
+# invisible to a self-round-trip (the T1 `writeBits`/`writeCode` split).
 flate-oracle:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -71,7 +74,7 @@ flate-oracle:
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(raw)
-            p = subprocess.run([str(harness), path, str(cap)], capture_output=True)
+            p = subprocess.run([str(harness), "decode", path, str(cap)], capture_output=True)
             if p.returncode != 0:
                 raise AssertionError(
                     "our decoder failed (%s): %s" % (p.returncode, p.stderr.decode().strip())
@@ -86,8 +89,25 @@ flate-oracle:
         try:
             with os.fdopen(fd, "wb") as f:
                 f.write(raw)
-            p = subprocess.run([str(harness), path, str(cap)], capture_output=True)
+            p = subprocess.run([str(harness), "decode", path, str(cap)], capture_output=True)
             return p.returncode != 0
+        finally:
+            os.unlink(path)
+
+
+    def our_compress(data: bytes) -> bytes:
+        """Our encoder, through the oracle harness: the raw deflate stream for
+        `data`."""
+        fd, path = tempfile.mkstemp()
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            p = subprocess.run([str(harness), "encode", path], capture_output=True)
+            if p.returncode != 0:
+                raise AssertionError(
+                    "our encoder failed (%s): %s" % (p.returncode, p.stderr.decode().strip())
+                )
+            return p.stdout
         finally:
             os.unlink(path)
 
@@ -99,13 +119,27 @@ flate-oracle:
 
     def check(desc: str, data: bytes, cap: int) -> None:
         """Both directions: an oracle-compressed stream decodes to `data` in our
-        decoder, and the oracle itself round-trips the same bytes."""
+        decoder, our encoder's stream decodes to `data` in the oracle, and the
+        oracle itself round-trips the same bytes."""
         for shape, compress in shapes:
             raw = compress(data)
             assert python_decompress(raw) == data, "oracle round trip (%s, %s)" % (desc, shape)
             got = our_decompress(raw, cap)
             assert got == data, "our decode (%s, %s): %d bytes, want %d" % (
                 desc, shape, len(got), len(data))
+
+        # Our encode -> the oracle's decode. This is the primary gate for the
+        # bit-packing rules (`§3.1.1`): a `writeBits`/`writeCode` mix-up
+        # round-trips against our own decoder and fails here.
+        ours = our_compress(data)
+        got = python_decompress(ours)
+        assert got == data, "our encode (%s): oracle decoded %d bytes, want %d" % (
+            desc, len(got), len(data))
+        # README, "Divergences" T4 — the stream ends with the empty fixed block
+        # `03 00` (byte-aligned) or that pattern shifted into the last three
+        # bytes; either way the final byte is zero and the bit before it is the
+        # ending's BTYPE bit.
+        assert ours[-1] == 0x00, "our encode (%s): final byte %#x" % (desc, ours[-1])
 
 
     # 1. The committed golang/go pairs: `.golden` is a single non-final block,
@@ -126,20 +160,28 @@ flate-oracle:
         pairs += 1
     assert pairs == 9, "expected 9 testdata pairs, found %d" % pairs
 
-    # 2. The oracle's own streams over the same inputs, every level.
+    # 2. The oracle's own streams over the same inputs, every level, and our
+    #    encoder's streams for the same bytes (both directions).
     for inp in sorted(testdata.glob("*.in")):
         check(inp.name, inp.read_bytes(), len(inp.read_bytes()) + 1)
 
-    # 3. Generated shapes: text, random, and single-byte runs.
+    # 3. Generated shapes: text, random, single-byte runs, and a long text
+    #    that spans several 64-KiB blocks (the encoder's cross-block matches).
     rng = random.Random(20261008)
     text = (b"the quick brown fox jumps over the lazy dog. " * 200)[:8192]
     random_bytes = bytes(rng.randrange(256) for _ in range(4096))
     rle = b"\x5a" * 3000 + b"\x00" * 5 + b"q" * 130000  # spans a 64 KiB block split
-    for desc, data in (("text", text), ("random", random_bytes), ("rle", rle)):
+    long_text = b"the quick brown fox jumps over the lazy dog. " * 6000  # 264 KB
+    for desc, data in (
+        ("text", text),
+        ("random", random_bytes),
+        ("rle", rle),
+        ("long text (multi-block)", long_text),
+    ):
         check(desc, data, len(data) + 1)
 
-    print("flate-oracle: %d fixture pairs + %d inputs x %d raw-deflate shapes: OK"
-          % (pairs, len(list(testdata.glob("*.in"))) + 3, len(shapes)))
+    print("flate-oracle: %d fixture pairs + %d inputs x %d raw-deflate shapes, both directions: OK"
+          % (pairs, len(list(testdata.glob("*.in"))) + 4, len(shapes)))
     PY
 
 # Run codec benchmarks (e.g. just bench -- --count=10 > bench.txt)

@@ -10,6 +10,13 @@ and dependency with a license that is not ours.
   Snappy-Go reference encoder. The algorithm is ported, not the code.
   Attribution: Copyright klauspost/compress contributors,
   https://github.com/klauspost/compress (s2/encode_all.go).
+- `src/flate/encode.zig`: a port of the algorithm in klauspost/compress
+  (BSD-3-Clause) `flate/level1.go` (`fastEncL1`) and `flate/fast_encoder.go` —
+  the single-slot `[1 << 15]` table, the 5-byte hash and its `prime5bytes`,
+  the accelerating skip, the 4-byte confirm, the backward extension, and the
+  258/255 match split. The algorithm is ported, not the code. Attribution:
+  Copyright klauspost/compress contributors,
+  https://github.com/klauspost/compress.
 - `src/snappy/golden.zig` golden fixtures: ported from golang/snappy
   (BSD-3-Clause) `TestDecode`, `TestDecodeCopy4`, and `TestDecodeLengthOffset`
   tables. Attribution: Copyright the Go Authors,
