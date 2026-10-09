@@ -1,16 +1,13 @@
 //! Shared scaffolding for the per-codec example CLIs.
 //!
 //! Each codec gets a thin executable (`examples/<codec>.zig`) that names the
-//! codec and provides whole-input `encode`/`decode`. This file owns
+//! codec and provides streaming `encode`/`decode` pumps. This file owns
 //! everything the codecs share: argument parsing, input (a file, or stdin
-//! via `-` or no argument), stdout, error reporting, and exit codes.
+//! via `-` or no argument) as an `Io.File.Reader`, stdout, and error
+//! handling.
 //!
 //! Usage (per codec): `<codec> encode [FILE|-] > out`, `<codec> decode [FILE|-] > out`.
-//!
-//! These CLIs read the whole input before encoding. They exist to feel the
-//! codec APIs in real usage, not to stream; streaming CLIs arrive with the
-//! streaming cores (docs/zcompress-plan.md, API layers). Exit codes: 0 ok,
-//! 1 usage, 2 codec error.
+//! Errors propagate to an error return trace with a nonzero exit code.
 
 const std = @import("std");
 const Io = std.Io;

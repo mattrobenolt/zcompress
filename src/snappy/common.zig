@@ -37,6 +37,9 @@ pub fn readUvarint(input: []const u8, pos: *usize) error{DecompressionFailed}!us
         if (pos.* >= input.len) return error.DecompressionFailed;
         const byte = input[pos.*];
         pos.* += 1;
+        // Spec §1: the length is at most 2^32 - 1, so a fifth byte carries
+        // at most 4 value bits.
+        if (i == 4 and byte > 0x0f) return error.DecompressionFailed;
         result |= (@as(usize, byte & 0x7F)) << @intCast(i * 7);
         if (byte & 0x80 == 0) return result;
     }

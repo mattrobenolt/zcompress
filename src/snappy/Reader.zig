@@ -31,7 +31,7 @@ const Writer = @import("Writer.zig");
 pub const Buffer = [decoded_region_len + Writer.scratch_len]u8;
 
 /// Two blocks of contiguous decoded serving region.
-const decoded_region_len = 2 * encode.max_block_size;
+const decoded_region_len = 3 * encode.max_block_size;
 
 pub const Reader = @This();
 
@@ -39,12 +39,23 @@ pub const Reader = @This();
 /// block boundary (`done`) or a failure sticks (`failed`, details in `err`).
 const State = enum { streaming, done, failed };
 
+/// The detailed error recorded once `state == .failed` (the interface reports
+/// `error.ReadFailed`): framing errors are ours (`Truncated`, `InvalidStream`,
+/// `StreamTooLong`), block errors come from `decode.DecompressError`, and
+/// `ReadFailed`/`EndOfStream` pass through from the input.
+pub const Error = error{
+    Truncated,
+    InvalidStream,
+    StreamTooLong,
+} || decode.DecompressError || error{ ReadFailed, EndOfStream };
+
 reader: Io.Reader,
 input: *Io.Reader,
+staging: *[Writer.scratch_len]u8,
 state: State = .streaming,
 /// Detailed error once `state == .failed`; the interface reports
 /// `error.ReadFailed`.
-err: ?anyerror = null,
+err: ?Error = null,
 
 const vtable: Io.Reader.VTable = .{
     .stream = stream,
@@ -61,12 +72,13 @@ const vtable: Io.Reader.VTable = .{
 pub fn init(input: *Io.Reader, buffer: *Buffer) Reader {
     return .{
         .reader = .{
-            .buffer = buffer,
+            .buffer = buffer[0..decoded_region_len],
             .seek = 0,
             .end = 0,
             .vtable = &vtable,
         },
         .input = input,
+        .staging = buffer[decoded_region_len..],
     };
 }
 
@@ -81,37 +93,37 @@ fn fillNextBlock(r: *Reader) Io.Reader.Error!usize {
         fastmem.move(u8, r.reader.buffer[0..keep], r.reader.buffer[r.reader.seek..][0..keep]);
         r.reader.seek = 0;
         r.reader.end = keep;
-        assert(r.reader.end + encode.max_block_size <= decoded_region_len);
+        // The consumer asked for more contiguous bytes than the region can
+        // hold beside a fresh block: fail closed, never assert on it.
+        if (r.reader.end + encode.max_block_size > decoded_region_len) {
+            return fail(r, error.StreamTooLong);
+        }
     }
 
-    // Zero bytes available at a block boundary is the clean, sticky end of
-    // the stream.
-    _ = r.input.peek(1) catch |err| switch (err) {
-        error.EndOfStream => {
-            r.state = .done;
-            return error.EndOfStream;
-        },
-        else => |e| return fail(r, e),
-    };
-    // Some bytes remain, so the 4-byte prefix must be complete.
-    const prefix = r.input.take(4) catch |err| switch (err) {
-        error.EndOfStream => return fail(r, error.Truncated),
-        else => |e| return fail(r, e),
-    };
-    const block_len = readInt(u32, prefix.ptr[0..4]);
+    // Zero bytes read at a block boundary is the clean, sticky end of the
+    // stream; 1-3 bytes is a truncated framing prefix.
+    var prefix: [4]u8 = undefined;
+    const prefix_len = r.input.readSliceShort(&prefix) catch |e| return fail(r, e);
+    if (prefix_len == 0) {
+        r.state = .done;
+        return error.EndOfStream;
+    }
+    if (prefix_len < 4) return fail(r, error.Truncated);
+    const block_len = readInt(u32, &prefix);
     if (block_len == 0 or block_len > Writer.scratch_len) return fail(r, error.InvalidStream);
 
-    const staging = r.reader.buffer[decoded_region_len..];
-    readExact(r.input, staging[0..block_len]) catch |err| return switch (err) {
-        // The block was cut short: corrupt framing.
+    // A short block read is corrupt framing: the length was declared.
+    r.input.readSliceAll(r.staging[0..block_len]) catch |e| return switch (e) {
         error.EndOfStream => fail(r, error.Truncated),
-        else => |e| fail(r, e),
+        else => |e2| fail(r, e2),
     };
 
-    const block = staging[0..block_len];
+    const block = r.staging[0..block_len];
     const decoded_len = decode.decompressedBlockLen(block) catch |err| return fail(r, err);
     // Our framing never declares a decoded block over one block; a hostile
-    // stream does not get the staging region.
+    // stream does not get the staging region. An empty decoded block is
+    // degenerate but valid snappy (the golden table's first case), and our
+    // Writer never emits one: it is accepted, and `stream` simply returns 0.
     if (decoded_len > encode.max_block_size) return fail(r, error.InvalidStream);
     const dest = r.reader.buffer[r.reader.end..][0..decoded_len];
     const n = decode.decompressBlock(block, dest) catch |err| return fail(r, err);
@@ -120,7 +132,7 @@ fn fillNextBlock(r: *Reader) Io.Reader.Error!usize {
     return 0;
 }
 
-fn fail(r: *Reader, err: anyerror) Io.Reader.Error {
+fn fail(r: *Reader, err: Error) Io.Reader.Error {
     r.state = .failed;
     r.err = err;
     return error.ReadFailed;
@@ -138,18 +150,6 @@ fn guard(r: *Reader) ?Io.Reader.Error {
 
 /// Read exactly `dest.len` bytes from `input`. A short input is
 /// `error.EndOfStream` (the caller maps it to corrupt framing).
-fn readExact(in: *Io.Reader, target: []u8) Io.Reader.Error!void {
-    var fw: Io.Writer = .fixed(target);
-    while (fw.end < target.len) {
-        _ = in.stream(&fw, .limited(target.len - fw.end)) catch |err| return switch (err) {
-            error.EndOfStream => error.EndOfStream,
-            error.ReadFailed => error.ReadFailed,
-            // `stream` writes at most the remaining capacity of `fw`.
-            error.WriteFailed => unreachable,
-        };
-    }
-}
-
 fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
     _ = w;
     _ = limit;
@@ -181,7 +181,7 @@ fn rebase(r: *Io.Reader, capacity: usize) Io.Reader.RebaseError!void {
     fastmem.move(u8, r.buffer[0..keep], r.buffer[r.seek..][0..keep]);
     r.seek = 0;
     r.end = keep;
-    assert(capacity + r.end <= decoded_region_len);
+    assert(capacity <= decoded_region_len);
 }
 
 test "Reader: round-trips through Writer" {
@@ -239,6 +239,110 @@ test "Reader: golden outputs round-trip Writer -> Reader" {
     }
 }
 
+test "Reader: random consumer machinery sequences stay correct" {
+    // Mixed peek/take/discardAll/readSliceAll/stream operations over randomly
+    // chunked streams: this is the driver class that catches vtable machinery
+    // interactions (the R1 contiguity bug asserted on ordinary consumer calls
+    // like `takeDelimiterExclusive`).
+    const gpa = testing.allocator;
+    var rng: DefaultPrng = .init(4242);
+    const rand = rng.random();
+    const input = try gpa.alloc(u8, 400_000);
+    defer gpa.free(input);
+    for (input, 0..) |*b, i| b.* = @truncate((i / 7) *% 31 +% rand.uintLessThan(u8, 3));
+
+    var iter: usize = 0;
+    while (iter < 120) : (iter += 1) {
+        var out: Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        var wbuf: Writer.Buffer = undefined;
+        var w: Writer = .init(&out.writer, &wbuf);
+        var p: usize = 0;
+        while (p < input.len) {
+            const n = @min(input.len - p, rand.intRangeAtMost(usize, 1, 90_000));
+            try w.writer.writeAll(input[p..][0..n]);
+            if (rand.uintLessThan(u8, 4) == 0) try w.writer.flush();
+            p += n;
+        }
+        try w.finish();
+
+        var rbuf: Buffer = undefined;
+        var fixed_in: Io.Reader = .fixed(out.written());
+        var r: Reader = .init(&fixed_in, &rbuf);
+        var pos: usize = 0;
+        while (pos < input.len) {
+            const left = input.len - pos;
+            switch (rand.uintLessThan(u8, 5)) {
+                0 => {
+                    const n = @min(left, rand.intRangeAtMost(usize, 1, encode.max_block_size));
+                    try testing.expectEqualSlices(u8, input[pos..][0..n], try r.reader.peek(n));
+                },
+                1 => {
+                    const n = @min(left, rand.intRangeAtMost(usize, 1, encode.max_block_size));
+                    try testing.expectEqualSlices(u8, input[pos..][0..n], try r.reader.take(n));
+                    pos += n;
+                },
+                2 => {
+                    const n = @min(left, rand.intRangeAtMost(usize, 1, 200_000));
+                    try r.reader.discardAll(n);
+                    pos += n;
+                },
+                3 => {
+                    var tmp: [100_000]u8 = undefined;
+                    const n = @min(left, rand.intRangeAtMost(usize, 1, tmp.len));
+                    try r.reader.readSliceAll(tmp[0..n]);
+                    try testing.expectEqualSlices(u8, input[pos..][0..n], tmp[0..n]);
+                    pos += n;
+                },
+                else => {
+                    var tmp: [5000]u8 = undefined;
+                    var fw: Io.Writer = .fixed(&tmp);
+                    const n = @min(left, rand.intRangeAtMost(usize, 0, 5000));
+                    _ = try r.reader.stream(&fw, .limited(n));
+                    // `stream` may serve from the buffer or fill it; the bytes
+                    // land in `fw` or stay buffered. Only the served count is
+                    // contractual.
+                    const served = @min(n, fw.end);
+                    const served_bytes = fw.buffered()[0..served];
+                    try testing.expectEqualSlices(u8, input[pos..][0..served], served_bytes);
+                    pos += served;
+                },
+            }
+        }
+        // The clean end of stream is sticky.
+        var sink: Io.Writer.Discarding = .init(&.{});
+        try testing.expectError(error.EndOfStream, r.reader.stream(&sink.writer, .unlimited));
+    }
+}
+
+test "Reader: a contiguous request past the two-block cap fails closed" {
+    // A consumer scanning for a delimiter inside an incompressible line
+    // longer than the cap asks the machinery for more contiguous bytes than
+    // the serving region can hold beside a fresh block. This must fail
+    // closed (`ReadFailed`, `err == .StreamTooLong`), never assert.
+    const gpa = testing.allocator;
+    const line_len: usize = 180_000;
+    var input: [60_000 + line_len + 1]u8 = undefined;
+    for (&input) |*b| b.* = 'a';
+    input[59_999] = '\n';
+    input[input.len - 1] = '\n';
+
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var wbuf: Writer.Buffer = undefined;
+    var w: Writer = .init(&out.writer, &wbuf);
+    try w.writer.writeAll(&input);
+    try w.finish();
+
+    var rbuf: Buffer = undefined;
+    var fixed_in: Io.Reader = .fixed(out.written());
+    var r: Reader = .init(&fixed_in, &rbuf);
+    _ = try r.reader.takeDelimiterExclusive('\n');
+    r.reader.toss(1);
+    try testing.expectError(error.ReadFailed, r.reader.takeDelimiterExclusive('\n'));
+    try testing.expectEqual(Error.StreamTooLong, r.err.?);
+}
+
 /// Frame one raw block for a golden stream test: the `u32-le` length
 /// prefix plus the block. Asserts `buf` can hold the frame.
 fn framedBlock(source: []const u8, buf: []u8) []u8 {
@@ -270,6 +374,9 @@ test "Reader: corrupt framing fails closed and stays failed" {
 }
 
 test "Reader: peek across blocks stays contiguous" {
+    // The documented cap is two blocks of contiguous decoded reads: after
+    // an unaligned take, a peek spanning the cap must stay contiguous (the
+    // append + slide path of fillNextBlock).
     const src = "the quick brown fox jumps over the lazy dog. " ** 4000; // ~172 KiB
     var out: Io.Writer.Allocating = .init(testing.allocator);
     defer out.deinit();
@@ -281,10 +388,30 @@ test "Reader: peek across blocks stays contiguous" {
     var rbuf: Buffer = undefined;
     var fixed_in: Io.Reader = .fixed(out.written());
     var r: Reader = .init(&fixed_in, &rbuf);
-    // Consume some, then peek a full block (the append + slide path).
     _ = try r.reader.take(1000);
-    const peeked = try r.reader.peek(encode.max_block_size);
-    try testing.expectEqualSlices(u8, src[1000 .. 1000 + encode.max_block_size], peeked);
+    const peek_len = 2 * encode.max_block_size - 1000;
+    const peeked = try r.reader.peek(peek_len);
+    try testing.expectEqualSlices(u8, src[1000..][0..peek_len], peeked);
+}
+
+test "Reader: a framed block decoding past one block fails closed" {
+    // The framing amplification guard: the golden Copy4 block decodes to
+    // 65545 bytes, over the one-block cap — a hostile stream does not get
+    // the serving region.
+    const gpa = testing.allocator;
+    var source: [golden.copy4_source_len]u8 = undefined;
+    golden.buildCopy4Source(&source);
+
+    var frame_buf: [golden.copy4_source_len + 4]u8 = undefined;
+    const frame = framedBlock(&source, &frame_buf);
+
+    var rbuf: Buffer = undefined;
+    var fixed_in: Io.Reader = .fixed(frame);
+    var r: Reader = .init(&fixed_in, &rbuf);
+    var plain: Io.Writer.Allocating = .init(gpa);
+    defer plain.deinit();
+    try testing.expectError(error.ReadFailed, pump(&r.reader, &plain.writer));
+    try testing.expectEqual(Error.InvalidStream, r.err.?);
 }
 
 /// Pump `r` into `w` until the clean end of stream.

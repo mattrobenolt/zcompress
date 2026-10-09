@@ -16,6 +16,15 @@ lint:
 fmt:
     zig fmt src build.zig
 
+# Compile-only cross-target gate: every portable fallback path must compile
+# (freestanding targets are excluded: the ztest runner needs an OS)
+check-baseline:
+    zig build check -Dtarget=x86_64-linux
+    zig build check -Dtarget=x86-linux
+    zig build check -Dtarget=arm-linux
+    zig build check -Dtarget=riscv64-linux
+    zig build check -Dtarget=wasm32-wasi
+
 # Run codec benchmarks (e.g. just bench -- --count=10 > bench.txt)
 bench *ARGS:
     zig build bench -Doptimize=ReleaseFast -- {{ ARGS }}

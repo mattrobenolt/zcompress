@@ -28,7 +28,6 @@ const std = @import("std");
 const assert = std.debug.assert;
 const testing = std.testing;
 const Target = std.Target;
-const print = std.debug.print;
 const builtin = @import("builtin");
 const native_arch = builtin.target.cpu.arch;
 
@@ -37,7 +36,6 @@ const fastmem = @import("fastmem");
 const common = @import("common.zig");
 const readInt = common.readInt;
 const readUvarint = common.readUvarint;
-const writeUvarint = common.writeUvarint;
 
 /// Error set for the decode path. Public because `decompressBlock` and
 /// `decompressedBlockLen` expose it in their signatures.
@@ -123,8 +121,10 @@ inline fn shuffleBytes(v: Vec16, mask: Vec16) Vec16 {
                 );
                 return out;
             } else {
-                var out: Vec16 = undefined;
-                for (0..16) |i| out[i] = v[mask[i]];
+                const v_bytes: [16]u8 = v;
+                const mask_bytes: [16]u8 = mask;
+                var out: [16]u8 = undefined;
+                for (0..16) |i| out[i] = v_bytes[mask_bytes[i]];
                 return out;
             }
         },
@@ -132,8 +132,10 @@ inline fn shuffleBytes(v: Vec16, mask: Vec16) Vec16 {
             // Portable fallback: a byte-wise permute. The compiler can often
             // recognize this as a shuffle on targets with a suitable instruction;
             // otherwise it stays a scalar loop (cold path for non-SIMD arches).
-            var out: Vec16 = undefined;
-            for (0..16) |i| out[i] = v[mask[i]];
+            const v_bytes: [16]u8 = v;
+            const mask_bytes: [16]u8 = mask;
+            var out: [16]u8 = undefined;
+            for (0..16) |i| out[i] = v_bytes[mask_bytes[i]];
             return out;
         },
     }
@@ -219,9 +221,10 @@ pub fn decompressedBlockLen(source: []const u8) DecompressError!usize {
 /// written. `error.BufferTooSmall` when `target` is too small (size via
 /// `decompressedBlockLen`). `error.DecompressionFailed` on corrupt source. Zero
 /// heap allocation.
-/// The tag dispatch loop: a literal or a copy per tag, until the source ends
-/// or the declared `uncomp_len` is reached. Pure per-tag logic lives in
-/// `decodeLiteral`/`decodeCopy` (the parent owns the control flow).
+/// The tag dispatch loop: a literal or a copy per tag, until the source
+/// ends. The declared length is enforced per tag and again at the end.
+/// Pure per-tag logic lives in `decodeLiteral`/`decodeCopy` (the parent owns
+/// the control flow).
 pub fn decompressBlock(source: []const u8, target: []u8) DecompressError!usize {
     var in_pos: usize = 0;
     const uncomp_len = try readUvarint(source, &in_pos);
@@ -287,12 +290,17 @@ fn decodeLiteral(
     } else {
         const extra: usize = @as(usize, code6) - 59; // 60→1 .. 63→4
         if (in_pos.* + extra > source.len) return error.DecompressionFailed;
-        length = 1;
+        var field: usize = 0;
         var i: usize = 0;
         while (i < extra) : (i += 1) {
-            length += @as(usize, source[in_pos.* + i]) << @intCast(i * 8);
+            field += @as(usize, source[in_pos.* + i]) << @intCast(i * 8);
         }
         in_pos.* += extra;
+        // Spec §2.1: the extended length is at most 2^32 - 1. Bound it by
+        // the remaining output before adding 1, so `field + 1` cannot wrap
+        // even on 32-bit targets.
+        if (field >= uncomp_len - out_pos.*) return error.DecompressionFailed;
+        length = field + 1;
     }
     if (in_pos.* + length > source.len) return error.DecompressionFailed;
     if (out_pos.* + length > uncomp_len) return error.DecompressionFailed;
@@ -318,6 +326,7 @@ fn decodeCopy(
 }
 
 test "decompress: empty block" {
+    // Spec: snappy-format-description.txt §2 (preamble: dLen=0).
     const block = [_]u8{0x00}; // varint(0)
     const dlen = try decompressedBlockLen(&block);
     try testing.expectEqual(@as(usize, 0), dlen);
@@ -327,6 +336,7 @@ test "decompress: empty block" {
 }
 
 test "decompress: literal-only block" {
+    // Spec: snappy-format-description.txt §3 (literal tag).
     // varint(13) + literal tag (13-1)<<2=0x30 + 13 bytes.
     const msg = "hello, snappy";
     var block: [16]u8 = undefined;
@@ -341,6 +351,7 @@ test "decompress: literal-only block" {
 }
 
 test "decompress: copy with 1-byte offset (overlapping RLE)" {
+    // Spec: snappy-format-description.txt §3.1 (copy-1 tag).
     // Decompressed: "ABABABAB" (8 bytes).
     // varint(8)=0x08, literal "AB" (tag 0x04), copy len6 off2 (0x09 0x02).
     const snappy_block = [_]u8{ 0x08, 0x04, 'A', 'B', 0x09, 0x02 };
@@ -351,6 +362,7 @@ test "decompress: copy with 1-byte offset (overlapping RLE)" {
 }
 
 test "decompress: copy with 2-byte offset" {
+    // Spec: snappy-format-description.txt §3.1 (copy-2 tag).
     // Decompressed: "XXXX" + 64 bytes of 'Y' (68 bytes total).
     // varint(68)=0x44, literal "XXXX" (tag 0x0C), copy len64 off4 (0xFE 0x04 0x00).
     const snappy_block = [_]u8{ 0x44, 0x0C, 'X', 'X', 'X', 'X', 0xFE, 0x04, 0x00 };
@@ -364,6 +376,7 @@ test "decompress: copy with 2-byte offset" {
 }
 
 test "decompress: overlapping copy offset 1 (single-byte run)" {
+    // Spec: snappy-format-description.txt §3.1 (overlapping copy).
     // varint(5)=0x05, literal "A" (tag 0x00), copy len4 off1 (0x01 0x01).
     const snappy_block = [_]u8{ 0x05, 0x00, 'A', 0x01, 0x01 };
     var target: [5]u8 = undefined;
@@ -373,6 +386,7 @@ test "decompress: overlapping copy offset 1 (single-byte run)" {
 }
 
 test "decompress: corrupt block returns DecompressionFailed" {
+    // Spec: snappy-format-description.txt §3 (tag bounds).
     const bad = [_]u8{0x80}; // truncated varint
     var target: [8]u8 = undefined;
     try testing.expectError(error.DecompressionFailed, decompressBlock(&bad, &target));
@@ -380,6 +394,7 @@ test "decompress: corrupt block returns DecompressionFailed" {
 }
 
 test "decompress: too-small target buffer returns BufferTooSmall" {
+    // Spec: snappy-format-description.txt §2 (dLen).
     // varint(13) + literal tag + 13 bytes, but target is only 4 bytes.
     const msg = "hello, snappy";
     var block: [16]u8 = undefined;
@@ -417,24 +432,16 @@ test "copyMatch: SIMD shuffle for small offsets round-trips" {
 }
 
 // ---------------------------------------------------------------------------
-// Golden decode vectors — ported from golang/snappy's TestDecode, TestDecodeCopy4,
-// and TestDecodeLengthOffset. These are the authoritative conformance cases:
-// every tag type, every extended-literal length form, and the corrupt-source
-// rejections (zero offset, offset past start, inconsistent dLen, truncated
-// length/offset bytes). A conformant snappy decoder must produce exactly the
-// documented output or reject exactly the documented corrupt source.
-//
-// Source: https://github.com/golang/snappy/blob/master/snappy_test.go
-//
 // Note on encoder golden vectors: snappy does NOT mandate a canonical
 // compressed form ("there is more than one valid encoding of any given source",
-// per golang/snappy). So we do NOT assert byte-identical encoder output against
-// reference corpora — only that our output round-trips and our decoder accepts
-// any valid block. These decode vectors are the real interop bar.
+// per golang/snappy decode_test.go). So we do NOT assert byte-identical encoder
+// output against reference corpora — only that our output round-trips and our
+// decoder accepts any valid block. The decode vectors in golden.zig are the
+// real interop bar.
 // ---------------------------------------------------------------------------
 
 test "golden decode: format_description.txt hand examples" {
-    // From the snappy format spec, section 2.2 (Copies):
+    // Spec: docs/research/specs/snappy-format-description.txt §2.2 (copies):
     //   "xababab" could be encoded as <literal: "xab"> <copy: offset=2 length=4>
     // Decompressed = "xababab" (3 literal + 4 copied from offset 2 → "abab").
     //   varint(7)=0x07, literal "xab" (tag (3-1)<<2=0x08), copy1 len4 off2

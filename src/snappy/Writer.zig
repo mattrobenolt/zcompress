@@ -17,6 +17,7 @@ const std = @import("std");
 const Io = std.Io;
 const assert = std.debug.assert;
 const testing = std.testing;
+const DefaultPrng = std.Random.DefaultPrng;
 
 const fastmem = @import("fastmem");
 
@@ -60,8 +61,10 @@ pub fn init(output: *Io.Writer, buffer: *Buffer) Writer {
 }
 
 /// Complete the stream: emit the final partial block, then flush `output`.
-/// Terminal — the writer is poisoned afterwards.
+/// Terminal — the writer is poisoned afterwards, and a failed or finished
+/// writer reports `error.WriteFailed` instead of a false success.
 pub fn finish(w: *Writer) Io.Writer.Error!void {
+    if (w.writer.vtable != &vtable) return error.WriteFailed;
     defer w.writer = .failing;
     try w.emitBlock();
     try w.output.flush();
@@ -96,32 +99,33 @@ fn emitBlock(w: *Writer) Io.Writer.Error!void {
 fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
     errdefer w.* = .failing;
     const parent: *Writer = @fieldParentPtr("writer", w);
-    try parent.emitBlock();
-
-    // Fill from the front of `data` (the last slice repeats `splat` times),
-    // stopping when the buffer fills.
+    // Top up the buffered block from the front of `data` (the last slice
+    // repeats `splat` times). `drain` only runs when `data` does not fit, so
+    // the top-up fills the buffer: every emitted block but the last is full.
     var consumed: usize = 0;
     for (data[0 .. data.len - 1]) |bytes| {
-        consumed += accept(w, bytes, consumed);
-        if (consumed == w.buffer.len) break;
+        consumed += accept(w, bytes);
+        if (w.end == w.buffer.len) break;
     }
-    if (consumed < w.buffer.len) {
-        const pattern = data[data.len - 1];
+    const pattern = data[data.len - 1];
+    if (pattern.len != 0) {
         for (0..splat) |_| {
-            consumed += accept(w, pattern, consumed);
-            if (consumed == w.buffer.len) break;
+            if (w.end == w.buffer.len) break;
+            consumed += accept(w, pattern);
         }
     }
-    assert(consumed <= w.buffer.len);
-    w.end = consumed;
+    // A full buffer is one maximal block; a degenerate call that accepted
+    // nothing still makes progress by emitting what is buffered.
+    if (w.end == w.buffer.len or consumed == 0) try parent.emitBlock();
     return consumed;
 }
 
-/// Copy at most the buffer's remaining space from the front of `bytes`,
-/// returning the bytes taken (a partial take when the buffer fills).
-fn accept(w: *Io.Writer, bytes: []const u8, consumed: usize) usize {
-    const n = @min(bytes.len, w.buffer.len - consumed);
-    fastmem.copy(u8, w.buffer[consumed..][0..n], bytes[0..n]);
+/// Copy at most the buffer's remaining space from the front of `bytes` to
+/// `buffer[end..]`, returning the bytes taken.
+fn accept(w: *Io.Writer, bytes: []const u8) usize {
+    const n = @min(bytes.len, w.buffer.len - w.end);
+    fastmem.copy(u8, w.buffer[w.end..][0..n], bytes[0..n]);
+    w.end += n;
     return n;
 }
 
@@ -253,6 +257,110 @@ test "Writer: golden decoded outputs encode to streams the block decoder verifie
             try plain.writer.writeAll(d_buf[0..n]);
         }
         try testing.expectEqualSlices(u8, tc.want, plain.written());
+    }
+}
+
+test "Writer: a failed or finished writer never reports a false success" {
+    // `finish` after a failed write, after `finish`, and writes after
+    // `finish` must all report `error.WriteFailed` — a truncated stream must
+    // not be reported as complete.
+    const gpa = testing.allocator;
+
+    // Finish after a failed write: the write buffers fine (it fits the
+    // accumulation buffer), the emit fails into the full fixed output, and
+    // `finish` must report it — twice, not a false success the second time.
+    var small: [8]u8 = undefined;
+    var fixed_out: Io.Writer = .fixed(&small);
+    var buf: Buffer = undefined;
+    var w: Writer = .init(&fixed_out, &buf);
+    try w.writer.writeAll("a" ** 4096);
+    try testing.expectError(error.WriteFailed, w.finish());
+    try testing.expectError(error.WriteFailed, w.finish());
+
+    // Write and finish after finish.
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var w2: Writer = .init(&out.writer, &buf);
+    try w2.writer.writeAll("hello, snappy");
+    try w2.finish();
+    try testing.expectError(error.WriteFailed, w2.writer.writeAll("more"));
+    try testing.expectError(error.WriteFailed, w2.finish());
+    try testing.expectEqual(1, countBlocks(out.written()));
+}
+
+test "Writer: random write machinery sequences stay correct" {
+    // Mixed writeSplatAll/writeVecAll/splatBytesAll/writableSliceGreedy+advance/
+    // writeByte/flush sequences: this is the driver class that catches drain
+    // accounting under the full vtable contract (multi-slice data with splat,
+    // partial straddling takes, direct-slice writes onto a full buffer).
+    const gpa = testing.allocator;
+    var rng: DefaultPrng = .init(99);
+    const rand = rng.random();
+
+    var iter: usize = 0;
+    while (iter < 200) : (iter += 1) {
+        var out: Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        var expect: std.ArrayList(u8) = .empty;
+        defer expect.deinit(gpa);
+        var buf: Buffer = undefined;
+        var w: Writer = .init(&out.writer, &buf);
+
+        var ops: usize = 0;
+        while (ops < 12) : (ops += 1) {
+            var a: [3000]u8 = undefined;
+            var b: [40000]u8 = undefined;
+            var pattern: [7]u8 = undefined;
+            rand.bytes(&a);
+            rand.bytes(&b);
+            rand.bytes(&pattern);
+            const a_len = rand.uintAtMost(usize, a.len);
+            const b_len = rand.uintAtMost(usize, b.len);
+            const p_len = rand.intRangeAtMost(usize, 1, pattern.len);
+            const splat = rand.uintAtMost(usize, 30000);
+            switch (rand.uintLessThan(u8, 5)) {
+                0 => {
+                    var data = [_][]const u8{ a[0..a_len], b[0..b_len], pattern[0..p_len] };
+                    try w.writer.writeSplatAll(&data, splat);
+                    try expect.appendSlice(gpa, a[0..a_len]);
+                    try expect.appendSlice(gpa, b[0..b_len]);
+                    for (0..splat) |_| try expect.appendSlice(gpa, pattern[0..p_len]);
+                },
+                1 => {
+                    var data = [_][]const u8{ a[0..a_len], b[0..b_len] };
+                    try w.writer.writeVecAll(&data);
+                    try expect.appendSlice(gpa, a[0..a_len]);
+                    try expect.appendSlice(gpa, b[0..b_len]);
+                },
+                2 => {
+                    try w.writer.splatBytesAll(pattern[0..p_len], splat);
+                    for (0..splat) |_| try expect.appendSlice(gpa, pattern[0..p_len]);
+                },
+                3 => {
+                    // The File.Reader simple-mode path: a direct write into the
+                    // buffer, which lands on `rebase` when the buffer is full.
+                    const dest = try w.writer.writableSliceGreedy(1);
+                    const n = @min(dest.len, b_len);
+                    for (dest[0..n], b[0..n]) |*d, x| d.* = x;
+                    w.writer.advance(n);
+                    try expect.appendSlice(gpa, b[0..n]);
+                },
+                else => {
+                    try w.writer.writeByte(pattern[0]);
+                    try expect.append(gpa, pattern[0]);
+                    if (rand.boolean()) try w.writer.flush();
+                },
+            }
+        }
+        try w.finish();
+
+        var rbuf: Reader.Buffer = undefined;
+        var fixed_in: Io.Reader = .fixed(out.written());
+        var r: Reader.Reader = .init(&fixed_in, &rbuf);
+        const got = try r.reader.allocRemaining(gpa, .unlimited);
+        defer gpa.free(got);
+        try testing.expectEqual(expect.items.len, got.len);
+        try testing.expectEqualSlices(u8, expect.items, got);
     }
 }
 

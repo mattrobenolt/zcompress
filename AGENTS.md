@@ -18,9 +18,9 @@ layer's tests); `Writer.zig` + `Reader.zig` are the streaming
   is the local benchmark.
 - `docs/research/specs/`: vendored specs (RFC 1950/1951/1952, RFC 8878, the
   snappy format description) with provenance.
-- `examples/`: one CLI per codec, `encode`/`decode` over a file or stdin, on
-  shared scaffolding (`examples/cli.zig`). Each CLI owns its codec's framing
-  decision — snappy's block framing is documented in `examples/snappy.zig`.
+- `examples/`: one CLI per codec, thin streaming pumps (`encode`/`decode`)
+  over a file or stdin on shared scaffolding (`examples/cli.zig`). The codec
+  package owns the framing (snappy's: `src/snappy/README.md`, "Streaming").
 - `docs/results/`: fleet results, one file per measurement (on demand).
 - `.pi/agents/`: the roster. The parent orchestrates; agents own lanes.
 
@@ -89,7 +89,7 @@ Deviations, on purpose:
 - The 70-line function limit is consciously overridden on `encodeBlock`'s
   scan cascade (154 lines): centralizing that labeled control flow in the
   parent is the Tiger rule that wins; its pure logic is already extracted
-  (`hash6`, `matchLen`, `load64`, `emitLiteral`, `emitCopy`).
+  (`hash6`, `load64`, `emitLiteral`, `emitCopy`).
 - House lint is 100 columns (tighter than Tiger's 120).
 
 ## Rules
@@ -110,6 +110,8 @@ Deviations, on purpose:
 - Export named buffer-type constants for every caller-provided buffer
   (ztls pattern), and take exact pointers of them at `init`, not slices with
   asserts.
+- A single `*Io.Reader`/`*Io.Writer` param is named `input`/`output` (the
+  `std.compress.flate` precedent); `in`/`out` name reader/writer pairs.
 - Style, per Matt's own edits (2026-10-09): hoist short aliases to the top of
   the file for anything used more than once (`const print = std.debug.print;`,
   `const mem = std.mem;`, `const Allocator = mem.Allocator;`);

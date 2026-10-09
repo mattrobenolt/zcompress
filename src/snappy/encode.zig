@@ -50,10 +50,10 @@ pub const max_block_size: usize = 65536;
 /// (32): below this there is nothing to gain from the hash table.
 const min_non_literal_block_size: usize = 32;
 
-/// Number of trailing input bytes reserved so the literal fast path can
-/// over-copy 16 bytes without running off the input. Matches the reference
-/// `inputMargin` (8): the literal fast path loads 8 bytes; keeping 8 in margin
-/// means a 1-byte literal's 8-byte load stays in bounds.
+/// Number of trailing input bytes reserved so the 8-byte fast-path loads
+/// stay in bounds. Matches the reference `inputMargin` (8): the fast paths
+/// load 8 bytes, so a 1-byte literal's 8-byte load stays in bounds with 8
+/// in margin.
 const input_margin: usize = 8;
 
 /// Hash table size: `1 << table_bits` u16 entries = 32 KiB on the stack.
@@ -133,7 +133,11 @@ pub fn compressBlock(source: []const u8, target: []u8) error{BufferTooSmall}!usi
         return d + try emitLiteral(target[d..], source);
     }
 
-    const n = encodeBlock(source, target[d..]) catch return error.BufferTooSmall;
+    // `encodeBlock` signals "not compressible within the bail threshold"
+    // with 0; treat an output-size failure the same way — the worst case
+    // cannot exceed the single-literal form, so the fallback always fits
+    // where `target` was sized via `maxCompressedLength`.
+    const n = encodeBlock(source, target[d..]) catch 0;
     if (n == 0) {
         // Not compressible within the bail threshold: emit the whole input as
         // one literal. Re-check the bound since emitLiteral may need more room
@@ -267,10 +271,6 @@ fn encodeBlock(source: []const u8, target: []u8) error{BufferTooSmall}!usize {
                 s += 8;
                 candidate += 8;
             }
-            // Clamp to the input end: the 8-byte loop may have run to the very
-            // end without a mismatch (a match that consumes the tail).
-            if (s > source.len) s = source.len;
-
             if (d + emitCopySize(repeat, s - base) > target.len) return error.BufferTooSmall;
             d += emitCopy(target[d..], repeat, s - base);
 

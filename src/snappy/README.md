@@ -53,7 +53,7 @@ Contracts, stated plainly:
 - **Sizing**: size `target` for `compressBlock` with `maxCompressedLength(src.len)`,
   and for `decompressBlock` with `decompressedBlockLen(source)`. Both functions
   return `error.BufferTooSmall` rather than truncating. Snappy never expands
-  past its bound, so the sizing helpers are exact upper bounds.
+  past its bound, so the sizing helpers are the worst case (never under).
 - **Corruption**: `decompressBlock` fails closed on any malformed tag,
   offset, or length — no partial output is trusted past the error.
 - **No hidden copies**: all copies go through `fastmem.copy`/`fastmem.set`;
@@ -75,6 +75,19 @@ Encode splits input into uncompressed blocks of exactly `max_block_size`
 A concatenation of raw blocks is not self-delimiting on the compressed side,
 hence the explicit length prefix.
 
+The format, precisely, for reimplementers:
+
+- `compressed_length` is a `u32-le` in `[1, scratch_len]` (`snappy.scratch_len`
+  = `maxCompressedLength(65536)`); a decoded block is at most
+  `max_block_size` bytes. An empty stream is 0 bytes. A block decoding to 0
+  bytes is degenerate but valid and accepted (the golden table's first case);
+  this Writer never emits one.
+- There is no magic number, end marker, or checksum: a stream truncated at a
+  block boundary, or two streams concatenated, goes undetected — layer a
+  checksum container (like gzip over flate) when that matters.
+- This is **not** google/snappy's `framing_format.txt` (the sNaPpY magic and
+  CRC-32C framing). Consumers needing that framing use the block functions.
+
 The `std.compress.flate` `Compress`/`Decompress` pair is the in-tree
 precedent for this shape: an embedded interface with a
 `{drain, flush, rebase}` / `{stream, discard, readVec, rebase}` vtable,
@@ -85,15 +98,16 @@ Buffer ownership, in full:
 
 - `WriterBuffer` is `[max_block_size]u8`: the uncompressed accumulation
   buffer, one block. `Writer.init(output: *Io.Writer, buffer: *WriterBuffer)`.
-- `ReaderBuffer` is `[2 * max_block_size + scratch_len]u8`: two blocks of
-  contiguous decoded serving region (so a `peek` up to two blocks stays
-  contiguous) plus the compressed-block staging region behind it.
+- `ReaderBuffer` is `[3 * max_block_size + scratch_len]u8`: a three-block
+  serving region holding two blocks of contiguous decoded reads plus room
+  for a fresh block, and the compressed-block staging region behind it.
   `Reader.init(input: *Io.Reader, buffer: *ReaderBuffer)`.
 - Zero allocation end to end: no allocator appears anywhere in the streaming
   API, and the compressed-output scratch is a comptime-sized stack local.
   The full encode/decode path allocates nothing.
-- The input's own buffer must hold at least 4 bytes (or the stream must end
-  before then).
+- Stack: each emitted block uses roughly 100 KiB of stack (the 64 KiB
+  compressed-output scratch plus the 32 KiB encoder hash table) — size thread
+  stacks accordingly when embedding.
 
 Semantics:
 
@@ -110,7 +124,9 @@ Semantics:
   details in `err`) on any corrupt framing or block. A partial length prefix,
   a truncated block, a declared length past staging, a garbage block, or a
   declared decoded length over one block all fail closed.
-- The contiguous decoded-read cap is two blocks: a `peek` beyond it asserts.
+- The contiguous decoded-read cap is two blocks: a request beyond it fails
+  closed with `error.ReadFailed` (`err == .StreamTooLong`), never an assert —
+  a hostile or unusual consumer cannot crash the reader.
 
 Files: `root.zig` (public surface), `encode.zig` (match-finder),
 `decode.zig` (SIMD decoder), `golden.zig` (ported golden fixtures, shared by

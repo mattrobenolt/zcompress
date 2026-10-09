@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const testing = std.testing;
+const assert = std.debug.assert;
 const print = std.debug.print;
 
 const common = @import("common.zig");
@@ -17,6 +18,7 @@ const fastmem = @import("fastmem");
 
 const decode = @import("decode.zig");
 const decompressBlock = decode.decompressBlock;
+const decompressedBlockLen = decode.decompressedBlockLen;
 const readInt = common.readInt;
 
 /// Sentinel byte range [0xa0, 0xc5) used to detect decoder overrun: the output
@@ -59,13 +61,14 @@ fn checkDecodeCase(d_buf: []u8, tc: DecodeCase) !void {
             error.DecompressionFailed,
             decompressBlock(tc.source, d_buf[0..d_len]),
         );
-        return;
+    } else {
+        const n = try decompressBlock(tc.source, d_buf[0..d_len]);
+        try testing.expectEqualSlices(u8, tc.want, d_buf[0..n]);
     }
 
-    const n = try decompressBlock(tc.source, d_buf[0..d_len]);
-    try testing.expectEqualSlices(u8, tc.want, d_buf[0..n]);
-
-    // Overrun: every byte from dLen onward must still hold its sentinel.
+    // Overrun: every case, pass or fail — every byte from dLen onward must
+    // still hold its sentinel (a failed decode may write partial output
+    // within dLen, never past it).
     for (d_buf[d_len..], 0..) |x, j| {
         try testing.expectEqual(overrun_base + @as(u8, @intCast((d_len + j) % overrun_len)), x);
     }
@@ -110,14 +113,7 @@ pub const golden_decode_cases: [30]DecodeCase = table_blk: {
         },
         .{
             .desc = "dLen=40; lit 0-byte len; valid",
-            .source = blk: {
-                var b: [42]u8 = undefined;
-                b[0] = 0x28;
-                b[1] = 0x9c;
-                @memcpy(b[2..][0..lit40_const.len], &lit40_const);
-                const source: [42]u8 = b;
-                break :blk &source;
-            },
+            .source = &([_]u8{ 0x28, 0x9c } ++ lit40_const),
             .want = &lit40_const,
             .want_err = false,
         },
@@ -275,6 +271,7 @@ pub const golden_decode_cases: [30]DecodeCase = table_blk: {
 };
 
 test "golden decode: golang/snappy TestDecode vector table" {
+    // Spec: snappy-format-description.txt §2 (preamble varint) and §3 (tags).
     var d_buf: [100]u8 = undefined;
     for (golden_decode_cases) |tc| {
         checkDecodeCase(&d_buf, tc) catch |err| {
@@ -284,41 +281,72 @@ test "golden decode: golang/snappy TestDecode vector table" {
     }
 }
 
-test "golden decode: large copy-4 offset (golang TestDecodeCopy4)" {
-    // decodedLen=65545: a 4-byte literal "pqrs", a 65536-byte literal of '.',
-    // then a copy-4 of length 5 offset 65540 (back into the start). Exercises
-    // the 4-byte-offset copy with a real large offset and a 64KiB literal.
+/// The golang `TestDecodeCopy4` source block, built: a 4-byte literal
+/// "pqrs", a 65536-byte literal of '.', then a copy-4 of length 5, offset
+/// 65540 (back into the start). decodedLen 65545 exceeds one block, so the
+/// Reader's framing amplification test reuses it.
+pub const copy4_source_len: usize = 3 + 5 + (3 + 65536) + 5;
+
+pub fn buildCopy4Source(buf: *[copy4_source_len]u8) void {
     const dots_len: usize = 65536;
-    const total: usize = 3 + 5 + (3 + dots_len) + 5; // varint(65545)=3, lit pqrs, lit dots, copy4
-    const source = try testing.allocator.alloc(u8, total);
-    defer testing.allocator.free(source);
     var p: usize = 0;
     // varint 65545 = 0x89 0x80 0x04
-    source[p] = 0x89;
-    source[p + 1] = 0x80;
-    source[p + 2] = 0x04;
+    buf[p] = 0x89;
+    buf[p + 1] = 0x80;
+    buf[p + 2] = 0x04;
     p += 3;
     // literal "pqrs" (length 4 -> tag (4-1)<<2 = 0x0c)
-    source[p] = 0x0c;
-    fastmem.copy(u8, source[p + 1 ..][0..4], "pqrs");
+    buf[p] = 0x0c;
+    fastmem.copy(u8, buf[p + 1 ..][0..4], "pqrs");
     p += 5;
     // literal 65536 '.' (length 65536 -> 2-byte extended: tag 0xf4, len-1 LE)
-    source[p] = 0xf4;
+    buf[p] = 0xf4;
     const n: u32 = @intCast(dots_len - 1);
-    source[p + 1] = @truncate(n);
-    source[p + 2] = @truncate(n >> 8);
+    buf[p + 1] = @truncate(n);
+    buf[p + 2] = @truncate(n >> 8);
     p += 3;
-    fastmem.set(u8, source[p..][0..dots_len], '.');
+    fastmem.set(u8, buf[p..][0..dots_len], '.');
     p += dots_len;
     // copy-4: length 5, offset 65540. tag = ((5-1)<<2)|0b11 = 0x13.
     // offset 65540 = 0x00010004 LE.
-    source[p] = 0x13;
-    source[p + 1] = 0x04;
-    source[p + 2] = 0x00;
-    source[p + 3] = 0x01;
-    source[p + 4] = 0x00;
+    buf[p] = 0x13;
+    buf[p + 1] = 0x04;
+    buf[p + 2] = 0x00;
+    buf[p + 3] = 0x01;
+    buf[p + 4] = 0x00;
     p += 5;
-    try testing.expectEqual(total, p);
+    assert(p == buf.len);
+}
+
+test "golden decode: invalid length varints (golang TestInvalidVarint)" {
+    // Spec §1: the uncompressed length is at most 2^32 - 1, so a fifth varint
+    // byte carries at most 4 value bits. Ported from golang/snappy
+    // TestInvalidVarint.
+    try testing.expectError(error.DecompressionFailed, decompressedBlockLen("\xff"));
+    try testing.expectError(
+        error.DecompressionFailed,
+        decompressedBlockLen("\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00"),
+    );
+    try testing.expectError(
+        error.DecompressionFailed,
+        decompressedBlockLen("\x80\x80\x80\x80\x10"),
+    );
+    // The maximum valid length: 4294967295.
+    try testing.expectEqual(
+        @as(usize, 0xffffffff),
+        try decompressedBlockLen("\xff\xff\xff\xff\x0f"),
+    );
+    var t: [1]u8 = undefined;
+    try testing.expectError(error.DecompressionFailed, decompressBlock("\x80\x80\x80\x80\x10", &t));
+}
+
+test "golden decode: large copy-4 offset (golang TestDecodeCopy4)" {
+    // decodedLen=65545: exercises the 4-byte-offset copy with a real large
+    // offset and a 64KiB literal. Spec: snappy-format-description.txt §3.1
+    // (copy-4 tag) and §2.1 (extended literal lengths).
+    const source = try testing.allocator.alloc(u8, copy4_source_len);
+    defer testing.allocator.free(source);
+    buildCopy4Source(source.ptr[0..copy4_source_len]);
 
     const d_len: usize = 65545;
     const target = try testing.allocator.alloc(u8, d_len);
@@ -327,11 +355,13 @@ test "golden decode: large copy-4 offset (golang TestDecodeCopy4)" {
     try testing.expectEqual(d_len, got);
     // want = "pqrs" + dots + "pqrs."
     try testing.expectEqualSlices(u8, "pqrs", target[0..4]);
-    for (target[4..][0..dots_len]) |b| try testing.expectEqual(@as(u8, '.'), b);
-    try testing.expectEqualSlices(u8, "pqrs.", target[4 + dots_len ..][0..5]);
+    for (target[4..][0..65536]) |b| try testing.expectEqual(@as(u8, '.'), b);
+    try testing.expectEqualSlices(u8, "pqrs.", target[4 + 65536 ..][0..5]);
 }
 
 test "golden decode: literal + copy2 + literal (golang TestDecodeLengthOffset)" {
+    // Spec: snappy-format-description.txt §3.1 (copy-2 tag) across every
+    // small offset and length, including overlapping (offset < length) RLE.
     // Exhaustive sweep over length, offset, suffixLen (1..18 each) of a
     // literal(prefix) + copy2(length, offset) + literal(suffix) pattern, with
     // the overrun check. This stresses copyMatch across every small offset

@@ -1,4 +1,4 @@
-//! Standalone Snappy block codec (raw block format, no framing). Imports only
+//! Standalone Snappy block codec. Imports only
 //! `std` and `fastmem`. Exposed as its own build module (`snappy`) and
 //! re-exported by the zcompress umbrella module: a hash-table match-finder
 //! encoder, a SIMD-accelerated decoder, and a streaming `Io` layer
@@ -45,9 +45,12 @@ pub const WriterBuffer = @import("Writer.zig").Buffer;
 /// (README.md, "Streaming"). Consume through `&r.reader`; ends cleanly with
 /// `error.EndOfStream`. Zero heap allocation.
 pub const Reader = @import("Reader.zig").Reader;
-/// The caller-provided buffer for `Reader`: two decoded blocks of contiguity
-/// plus the compressed-block staging region.
+/// The caller-provided buffer for `Reader`: a three-block serving region
+/// (two blocks of contiguous decoded reads) plus the compressed-block
+/// staging region.
 pub const ReaderBuffer = @import("Reader.zig").Buffer;
+/// The compressed-output scratch size: the exact worst case for one block.
+pub const scratch_len = @import("Writer.zig").scratch_len;
 
 test {
     _ = encode;

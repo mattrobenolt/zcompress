@@ -101,6 +101,14 @@ pub fn build(b: *Build) void {
     run_zcompress_tests.has_side_effects = true;
     test_step.dependOn(&run_zcompress_tests.step);
 
+    // Compile-only gate: compiles the codec test binaries without running
+    // them, for cross-target checks (the portable fallbacks only compile on
+    // non-native targets):
+    //   zig build check -Dtarget=x86_64-linux
+    const check_step = b.step("check", "Compile the tests without running (cross-target gate)");
+    check_step.dependOn(&snappy_tests.step);
+    check_step.dependOn(&zcompress_tests.step);
+
     // Benchmarks. The benchmark dependency is lazy: b.lazyImport fetches it
     // on the first `zig build bench` and returns null meanwhile, so the
     // codec modules and the test step build without it.
