@@ -106,7 +106,7 @@ pub fn benchmarkDecompress(b: *bench.B) !void {
                 defer bb.allocator.free(comp);
                 const clen = try snappy.compressBlock(input, comp);
 
-                const dlen = try snappy.decompressedBlockLen(comp[0..clen]);
+                const dlen = try snappy.decompressedBlockLength(comp[0..clen]);
                 const back = try bb.allocator.alloc(u8, dlen);
                 defer bb.allocator.free(back);
 

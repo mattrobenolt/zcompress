@@ -139,7 +139,7 @@ fn blockRoundTrip(bytes: []const u8) !void {
     // The documented bound: never past the worst-case literal form.
     try testing.expect(c_len <= encode.maxCompressedLength(bytes.len));
     // The preamble agrees with the input, and the block decodes back.
-    try testing.expectEqual(bytes.len, try decode.decompressedBlockLen(compressed[0..c_len]));
+    try testing.expectEqual(bytes.len, try decode.decompressedBlockLength(compressed[0..c_len]));
 
     var window: [block_max + guard_len]u8 = undefined;
     fillSentinels(window[0 .. bytes.len + guard_len]);
@@ -192,14 +192,14 @@ const block_decode_corpus: []const []const u8 = &.{
 /// copy offsets and lengths (including overlapping RLE and 4-byte offsets),
 /// the declared-length preamble, and the target-size gate. The property:
 /// decode either fails (`DecompressionFailed`, or `BufferTooSmall` when the
-/// declared length exceeds the target) or is exact — `decompressedBlockLen`
+/// declared length exceeds the target) or is exact — `decompressedBlockLength`
 /// bytes out, re-encoding into a block that decodes back to the same bytes —
 /// and never writes past the target's length (the sentinel check).
 fn fuzzBlockDecode(_: void, smith: *Smith) anyerror!void {
     var source_buf: [source_max]u8 = undefined;
     const source = source_buf[0..smith.slice(&source_buf)];
 
-    const declared = decode.decompressedBlockLen(source) catch |err| {
+    const declared = decode.decompressedBlockLength(source) catch |err| {
         // The only failure a length preamble has: truncated, longer than 5
         // bytes, or a fifth byte carrying more than 4 value bits (spec §1).
         try testing.expectEqual(error.DecompressionFailed, err);
@@ -526,7 +526,7 @@ fn referenceDecode(stream: []const u8, plain: *Io.Writer.Allocating) !bool {
         if (stream.len - pos < block_len) return false;
         const block = stream[pos..][0..block_len];
         pos += block_len;
-        const decoded_len = decode.decompressedBlockLen(block) catch return false;
+        const decoded_len = decode.decompressedBlockLength(block) catch return false;
         if (decoded_len > block_max) return false;
         const n = decode.decompressBlock(block, block_buf[0..decoded_len]) catch return false;
         try plain.writer.writeAll(block_buf[0..n]);

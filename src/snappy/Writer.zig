@@ -252,7 +252,7 @@ test "Writer: golden decoded outputs encode to streams the block decoder verifie
             pos += 4;
             const block = stream[pos..][0..block_len];
             pos += block_len;
-            const d_len = try decode.decompressedBlockLen(block);
+            const d_len = try decode.decompressedBlockLength(block);
             const n = try decode.decompressBlock(block, d_buf[0..d_len]);
             try plain.writer.writeAll(d_buf[0..n]);
         }

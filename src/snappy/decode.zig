@@ -38,7 +38,7 @@ const readInt = common.readInt;
 const readUvarint = common.readUvarint;
 
 /// Error set for the decode path. Public because `decompressBlock` and
-/// `decompressedBlockLen` expose it in their signatures.
+/// `decompressedBlockLength` expose it in their signatures.
 pub const DecompressError = error{ BufferTooSmall, DecompressionFailed };
 
 /// 16-byte vector type for the shuffle loads/stores. PascalCase because it's
@@ -212,14 +212,14 @@ fn copyMatch(target: []u8, pos: usize, offset: usize, length: usize) void {
 
 /// Decompressed byte length of a raw snappy block (the varint at the start).
 /// `error.DecompressionFailed` if the varint is corrupt/truncated.
-pub fn decompressedBlockLen(source: []const u8) DecompressError!usize {
+pub fn decompressedBlockLength(source: []const u8) DecompressError!usize {
     var pos: usize = 0;
     return readUvarint(source, &pos);
 }
 
 /// Decompress a raw snappy block from `source` into `target`, returning bytes
 /// written. `error.BufferTooSmall` when `target` is too small (size via
-/// `decompressedBlockLen`). `error.DecompressionFailed` on corrupt source. Zero
+/// `decompressedBlockLength`). `error.DecompressionFailed` on corrupt source. Zero
 /// heap allocation.
 /// The tag dispatch loop: a literal or a copy per tag, until the source
 /// ends. The declared length is enforced per tag and again at the end.
@@ -328,7 +328,7 @@ fn decodeCopy(
 test "decompress: empty block" {
     // Spec: snappy-format-description.txt §2 (preamble: dLen=0).
     const block = [_]u8{0x00}; // varint(0)
-    const dlen = try decompressedBlockLen(&block);
+    const dlen = try decompressedBlockLength(&block);
     try testing.expectEqual(@as(usize, 0), dlen);
     var target: [1]u8 = undefined;
     const blen = try decompressBlock(&block, &target);
@@ -343,7 +343,7 @@ test "decompress: literal-only block" {
     block[0] = 0x0D;
     block[1] = 0x30;
     fastmem.copy(u8, block[2..][0..msg.len], msg);
-    const dlen = try decompressedBlockLen(block[0 .. 2 + msg.len]);
+    const dlen = try decompressedBlockLength(block[0 .. 2 + msg.len]);
     try testing.expectEqual(msg.len, dlen);
     var target: [32]u8 = undefined;
     const blen = try decompressBlock(block[0 .. 2 + msg.len], &target);
@@ -390,7 +390,7 @@ test "decompress: corrupt block returns DecompressionFailed" {
     const bad = [_]u8{0x80}; // truncated varint
     var target: [8]u8 = undefined;
     try testing.expectError(error.DecompressionFailed, decompressBlock(&bad, &target));
-    try testing.expectError(error.DecompressionFailed, decompressedBlockLen(&bad));
+    try testing.expectError(error.DecompressionFailed, decompressedBlockLength(&bad));
 }
 
 test "decompress: too-small target buffer returns BufferTooSmall" {
@@ -454,7 +454,7 @@ test "golden decode: format_description.txt hand examples" {
 
 test "golden decode: varint prefix examples from the spec" {
     // Section 1 (Preamble): uncompressed length 64 -> 0x40; 2097150 (0x1FFFFE)
-    // -> 0xFE 0xFF 0x7F. We only need decompressedBlockLen to read them back.
+    // -> 0xFE 0xFF 0x7F. We only need decompressedBlockLength to read them back.
     var pos: usize = 0;
     try testing.expectEqual(@as(usize, 64), try readUvarint(&[_]u8{0x40}, &pos));
     pos = 0;

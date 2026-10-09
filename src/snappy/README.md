@@ -29,7 +29,7 @@ snappy.compressBlock(source: []const u8, target: []u8) error{BufferTooSmall}!usi
 snappy.decompressBlock(source: []const u8, target: []u8) DecompressError!usize
 
 // Read the decompressed length (the leading varint) to size `target`.
-snappy.decompressedBlockLen(source: []const u8) DecompressError!usize
+snappy.decompressedBlockLength(source: []const u8) DecompressError!usize
 
 // The block-size precondition: 65536. compressBlock asserts it.
 snappy.max_block_size: usize
@@ -51,7 +51,7 @@ Contracts, stated plainly:
 - **Ownership**: the caller owns every buffer, on both sides. Nothing is
   allocated, freed, or retained. There is no allocator in the API at all.
 - **Sizing**: size `target` for `compressBlock` with `maxCompressedLength(src.len)`,
-  and for `decompressBlock` with `decompressedBlockLen(source)`. Both functions
+  and for `decompressBlock` with `decompressedBlockLength(source)`. Both functions
   return `error.BufferTooSmall` rather than truncating. Snappy never expands
   past its bound, so the sizing helpers are the worst case (never under).
 - **Corruption**: `decompressBlock` fails closed on any malformed tag,

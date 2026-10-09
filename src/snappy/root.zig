@@ -11,17 +11,17 @@
 const std = @import("std");
 
 const decode = @import("decode.zig");
-/// The error set of `decompressedBlockLen` and `decompressBlock`:
-/// `BufferTooSmall` (size `target` via `decompressedBlockLen` first) or
+/// The error set of `decompressedBlockLength` and `decompressBlock`:
+/// `BufferTooSmall` (size `target` via `decompressedBlockLength` first) or
 /// `DecompressionFailed` (corrupt input).
 pub const DecompressError = decode.DecompressError;
 /// Decompress a raw snappy block from `source` into `target`. Returns bytes written.
 /// `error.BufferTooSmall` when `target` is too small (size via
-/// `decompressedBlockLen`); `error.DecompressionFailed` on corrupt input.
+/// `decompressedBlockLength`); `error.DecompressionFailed` on corrupt input.
 /// Zero heap allocation.
 pub const decompressBlock = decode.decompressBlock;
 /// Decompressed byte length of a raw snappy block (the leading varint).
-pub const decompressedBlockLen = decode.decompressedBlockLen;
+pub const decompressedBlockLength = decode.decompressedBlockLength;
 const encode = @import("encode.zig");
 /// Worst-case raw-block compressed size for `input_len` bytes (varint length
 /// prefix + literal blowup bound). Size `target` to this before `compressBlock`.

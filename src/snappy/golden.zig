@@ -18,7 +18,7 @@ const fastmem = @import("fastmem");
 
 const decode = @import("decode.zig");
 const decompressBlock = decode.decompressBlock;
-const decompressedBlockLen = decode.decompressedBlockLen;
+const decompressedBlockLength = decode.decompressedBlockLength;
 const readInt = common.readInt;
 
 /// Sentinel byte range [0xa0, 0xc5) used to detect decoder overrun: the output
@@ -322,19 +322,19 @@ test "golden decode: invalid length varints (golang TestInvalidVarint)" {
     // Spec §1: the uncompressed length is at most 2^32 - 1, so a fifth varint
     // byte carries at most 4 value bits. Ported from golang/snappy
     // TestInvalidVarint.
-    try testing.expectError(error.DecompressionFailed, decompressedBlockLen("\xff"));
+    try testing.expectError(error.DecompressionFailed, decompressedBlockLength("\xff"));
     try testing.expectError(
         error.DecompressionFailed,
-        decompressedBlockLen("\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00"),
+        decompressedBlockLength("\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x00"),
     );
     try testing.expectError(
         error.DecompressionFailed,
-        decompressedBlockLen("\x80\x80\x80\x80\x10"),
+        decompressedBlockLength("\x80\x80\x80\x80\x10"),
     );
     // The maximum valid length: 4294967295.
     try testing.expectEqual(
         @as(usize, 0xffffffff),
-        try decompressedBlockLen("\xff\xff\xff\xff\x0f"),
+        try decompressedBlockLength("\xff\xff\xff\xff\x0f"),
     );
     var t: [1]u8 = undefined;
     try testing.expectError(error.DecompressionFailed, decompressBlock("\x80\x80\x80\x80\x10", &t));

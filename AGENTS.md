@@ -112,6 +112,10 @@ Deviations, on purpose:
   asserts.
 - A single `*Io.Reader`/`*Io.Writer` param is named `input`/`output` (the
   `std.compress.flate` precedent); `in`/`out` name reader/writer pairs.
+- CamelCase API names spell `Length` unabbreviated
+  (`maxCompressedLength`, `decompressedBlockLength`); snake_case
+  identifiers keep `len` (std's `.len` convention: `scratch_len`,
+  `dots_len`).
 - Style, per Matt's own edits (2026-10-09): hoist short aliases to the top of
   the file for anything used more than once (`const print = std.debug.print;`,
   `const mem = std.mem;`, `const Allocator = mem.Allocator;`);

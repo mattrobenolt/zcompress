@@ -119,7 +119,7 @@ fn fillNextBlock(r: *Reader) Io.Reader.Error!usize {
     };
 
     const block = r.staging[0..block_len];
-    const decoded_len = decode.decompressedBlockLen(block) catch |err| return fail(r, err);
+    const decoded_len = decode.decompressedBlockLength(block) catch |err| return fail(r, err);
     // Our framing never declares a decoded block over one block; a hostile
     // stream does not get the staging region. An empty decoded block is
     // degenerate but valid snappy (the golden table's first case), and our

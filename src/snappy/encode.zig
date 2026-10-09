@@ -417,7 +417,7 @@ fn roundTrip(input: []const u8) !void {
     const clen = try compressBlock(input, comp);
     try testing.expect(clen <= bound);
 
-    const dlen = try decode.decompressedBlockLen(comp[0..clen]);
+    const dlen = try decode.decompressedBlockLength(comp[0..clen]);
     try testing.expectEqual(input.len, dlen);
 
     const back = try testing.allocator.alloc(u8, dlen);
@@ -469,7 +469,7 @@ test "encode: 64K boundary round-trips" {
     const comp = try testing.allocator.alloc(u8, bound);
     defer testing.allocator.free(comp);
     const clen = try compressBlock(&input, comp);
-    const dlen = try decode.decompressedBlockLen(comp[0..clen]);
+    const dlen = try decode.decompressedBlockLength(comp[0..clen]);
     try testing.expectEqual(input.len, dlen);
     const back = try testing.allocator.alloc(u8, dlen);
     defer testing.allocator.free(back);
