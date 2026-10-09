@@ -14,66 +14,67 @@
 
 const std = @import("std");
 const Io = std.Io;
-
-/// Input cap. Whole-file reads beyond this fail closed rather than OOM.
-const input_limit: Io.Limit = .limited64(1 << 30);
+const print = std.debug.print;
+const stringToEnum = std.meta.stringToEnum;
+const mem = std.mem;
+const Allocator = mem.Allocator;
+const process = std.process;
 
 pub const Codec = struct {
     name: []const u8,
     /// Encode the whole input and write the encoded stream to `out`.
-    encode: *const fn (allocator: std.mem.Allocator, input: []const u8, out: *Io.Writer) anyerror!void,
+    encode: *const fn (arena: Allocator, in: *Io.Reader, out: *Io.Writer) anyerror!void,
     /// Decode a stream produced by `encode` and write the decoded bytes.
-    decode: *const fn (allocator: std.mem.Allocator, input: []const u8, out: *Io.Writer) anyerror!void,
+    decode: *const fn (arena: Allocator, in: *Io.Reader, out: *Io.Writer) anyerror!void,
 };
 
-pub fn run(codec: Codec, init: std.process.Init) !u8 {
-    const arena: std.mem.Allocator = init.arena.allocator();
+const Mode = enum {
+    encode,
+    decode,
+};
+
+pub fn run(codec: Codec, init: process.Init) !u8 {
     const io = init.io;
+    const arena = init.arena.allocator();
 
     const args = try init.minimal.args.toSlice(arena);
     if (args.len < 2) return usage(codec.name);
-    const mode: enum { encode, decode } =
-        if (std.mem.eql(u8, args[1], "encode")) .encode else if (std.mem.eql(u8, args[1], "decode")) .decode else return usage(codec.name);
-    const path: ?[]const u8 = switch (args.len) {
-        2 => null,
-        3 => if (std.mem.eql(u8, args[2], "-")) null else args[2],
+
+    const cmd = args[1];
+    const rest = args[2..];
+
+    const mode = stringToEnum(Mode, cmd) orelse return usage(codec.name);
+
+    const path: ?[]const u8 = switch (rest.len) {
+        0 => null,
+        1 => if (mem.eql(u8, rest[0], "-")) null else rest[0],
         else => return usage(codec.name),
     };
 
-    const input: []const u8 = if (path) |p|
-        Io.Dir.cwd().readFileAlloc(io, p, arena, input_limit) catch |err| {
-            std.debug.print("{s}: {s}: {s}\n", .{ codec.name, @errorName(err), p });
-            return 2;
-        }
-    else blk: {
-        var stdin_buffer: [64 * 1024]u8 = undefined;
-        var stdin: Io.File.Reader = .init(.stdin(), io, &stdin_buffer);
-        break :blk stdin.interface.allocRemaining(arena, input_limit) catch |err| {
-            std.debug.print("{s}: {s}: <stdin>\n", .{ codec.name, @errorName(err) });
-            return 2;
-        };
-    };
+    const input: Io.File = if (path) |p| try Io.Dir.cwd().openFile(io, p, .{
+        .allow_directory = false,
+        .follow_symlinks = true,
+    }) else .stdin();
 
-    var stdout_buffer: [64 * 1024]u8 = undefined;
-    var stdout: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-    const out = &stdout.interface;
+    var read_buffer: [64 * 1024]u8 = undefined;
+    var file_reader: Io.File.Reader = .init(input, io, &read_buffer);
+    const reader = &file_reader.interface;
+
+    var write_buffer: [64 * 1024]u8 = undefined;
+    var stdout_writer: Io.File.Writer = .init(.stdout(), io, &write_buffer);
+    const writer = &stdout_writer.interface;
+    // Best-effort flush on every exit path; errors are unreportable here.
+    defer writer.flush() catch {};
 
     const op = switch (mode) {
         .encode => codec.encode,
         .decode => codec.decode,
     };
-    op(arena, input, out) catch |err| {
-        std.debug.print("{s}: {s}: {s}\n", .{ codec.name, @errorName(err), if (path) |p| p else "<stdin>" });
-        return 2;
-    };
-    out.flush() catch |err| {
-        std.debug.print("{s}: stdout: {s}\n", .{ codec.name, @errorName(err) });
-        return 2;
-    };
+    try op(arena, reader, writer);
     return 0;
 }
 
 fn usage(name: []const u8) u8 {
-    std.debug.print("usage: {s} encode|decode [FILE|-] > out\n", .{name});
+    print("usage: {s} encode|decode [FILE|-] > out\n", .{name});
     return 1;
 }

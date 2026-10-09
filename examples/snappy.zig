@@ -1,22 +1,20 @@
 //! Snappy example CLI: `snappy encode [FILE|-] > out`,
 //! `snappy decode [FILE|-] > out`. Shared scaffolding in `examples/cli.zig`.
 //!
-//! Snappy is a raw-block codec with no framing, so this CLI owns the framing
-//! (src/snappy/README.md: "the consumer owns the framing bytes"). The stream
-//! format this CLI defines:
+//! This is the thin-pump shape the streaming layer enables: `encode` wraps
+//! stdout in a `snappy.Writer` and pumps stdin into it; `decode` wraps stdin
+//! in a `snappy.Reader` and pumps it into stdout. The framing
+//! (`u32-le compressed_length + raw block`, split at `snappy.max_block_size`)
+//! is the package's stream format — it lives in `src/snappy/` (see
+//! `snappy.Reader`/`snappy.Writer` and `src/snappy/README.md`), not here.
 //!
-//! ```text
-//! stream   := block*
-//! block    := u32-le compressed_length, raw-snappy-block
-//! ```
-//!
-//! The raw block itself leads with the varint uncompressed length, but a
-//! concatenation of raw blocks is not self-delimiting on the compressed side,
-//! hence the explicit length prefix. Encode splits input into blocks of
-//! `snappy.max_block_size` (64 KiB, the format's u16-position limit).
+//! Both pumps are stack-buffered end to end: the whole encode/decode path
+//! allocates nothing.
 
 const std = @import("std");
 const Io = std.Io;
+const Allocator = std.mem.Allocator;
+const testing = std.testing;
 
 const cli = @import("cli");
 const snappy = @import("snappy");
@@ -29,66 +27,42 @@ pub fn main(init: std.process.Init) !u8 {
     }, init);
 }
 
-fn encode(allocator: std.mem.Allocator, input: []const u8, out: *Io.Writer) !void {
-    if (input.len == 0) return;
+fn encode(arena: Allocator, in: *Io.Reader, out: *Io.Writer) !void {
+    _ = arena;
+    var buf: snappy.WriterBuffer = undefined;
+    var w: snappy.Writer = .init(out, &buf);
+    while (true) {
+        _ = in.stream(&w.writer, .unlimited) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
+    }
+    try w.finish();
+}
 
-    // One scratch buffer, sized once: the worst case for the largest block.
-    const scratch = try allocator.alloc(u8, snappy.maxCompressedLength(snappy.max_block_size));
-    defer allocator.free(scratch);
-
-    var pos: usize = 0;
-    while (pos < input.len) {
-        const take = @min(snappy.max_block_size, input.len - pos);
-        const chunk = input[pos..][0..take];
-        const n = try snappy.compressBlock(chunk, scratch);
-        try writeU32Le(out, @intCast(n));
-        try out.writeAll(scratch[0..n]);
-        pos += take;
+fn decode(arena: Allocator, in: *Io.Reader, out: *Io.Writer) !void {
+    _ = arena;
+    var buf: snappy.ReaderBuffer = undefined;
+    var r: snappy.Reader = .init(in, &buf);
+    while (true) {
+        _ = r.reader.stream(out, .unlimited) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => |e| return e,
+        };
     }
 }
 
-fn decode(allocator: std.mem.Allocator, input: []const u8, out: *Io.Writer) !void {
-    // One scratch buffer, sized once: the largest block's decoded size.
-    const scratch = try allocator.alloc(u8, snappy.max_block_size);
-    defer allocator.free(scratch);
+test "example: streaming round-trip" {
+    var compressed: Io.Writer.Allocating = .init(testing.allocator);
+    defer compressed.deinit();
 
-    var pos: usize = 0;
-    while (pos < input.len) {
-        if (input.len - pos < 4) return error.Truncated;
-        const block_len = std.mem.readInt(u32, input[pos..][0..4], .little);
-        pos += 4;
-        if (input.len - pos < block_len) return error.Truncated;
-        const block = input[pos..][0..block_len];
-        pos += block_len;
+    var in: Io.Reader = .fixed("hello hello hello, streaming snappy round-trip");
+    try encode(undefined, &in, &compressed.writer);
 
-        const decoded_len = try snappy.decompressedBlockLen(block);
-        if (decoded_len > scratch.len) return error.OversizedBlock;
-        const n = try snappy.decompressBlock(block, scratch[0..decoded_len]);
-        try out.writeAll(scratch[0..n]);
-    }
-}
-
-fn writeU32Le(out: *Io.Writer, value: u32) !void {
-    try out.writeAll(&.{
-        @truncate(value),
-        @truncate(value >> 8),
-        @truncate(value >> 16),
-        @truncate(value >> 24),
-    });
-}
-
-test {
-    // The framing round-trips: split, prefix, and reassemble.
-    const gpa = std.testing.allocator;
-    var out: std.Io.Writer.Allocating = .init(gpa);
-    defer out.deinit();
-
-    const src = "hello hello hello hello, snappy framing round-trip";
-    try encode(gpa, src, &out.writer);
-    try std.testing.expect(out.written().len > 0);
-
-    var plain: std.Io.Writer.Allocating = .init(gpa);
+    var plain: Io.Writer.Allocating = .init(testing.allocator);
     defer plain.deinit();
-    try decode(gpa, out.written(), &plain.writer);
-    try std.testing.expectEqualStrings(src, plain.written());
+    var z: Io.Reader = .fixed(compressed.written());
+    try decode(undefined, &z, &plain.writer);
+
+    try testing.expectEqualStrings("hello hello hello, streaming snappy round-trip", plain.written());
 }

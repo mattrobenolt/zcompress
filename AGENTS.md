@@ -11,7 +11,10 @@ it before you change a kernel or make a performance claim.
 - `src/snappy/`: raw-block snappy, the first codec, with fastmem wired into
   its copy paths. `encode.zig` ports the klauspost
   encoder algorithm (THIRD_PARTY.md); `decode.zig` is original, with golden
-  vectors from golang/snappy; `bench.zig` is the local benchmark.
+  vectors from golang/snappy; `Writer.zig` + `Reader.zig` are the streaming
+  `Io` layer (a compressing `Io.Writer` and a decompressing `Io.Reader` over
+  the framed stream — see `src/snappy/README.md`, "Streaming"); `bench.zig`
+  is the local benchmark.
 - `docs/research/specs/`: vendored specs (RFC 1950/1951/1952, RFC 8878, the
   snappy format description) with provenance.
 - `examples/`: one CLI per codec, `encode`/`decode` over a file or stdin, on
@@ -64,7 +67,21 @@ it before you change a kernel or make a performance claim.
 - A codec imports only `std` and `fastmem`. No cross-codec imports; shared
   primitives go to `src/internal/` only when two codecs need them.
 - Zero heap allocation on codec hot paths. Caller owns buffers; setup
-  allocation is documented at the API.
+  allocation is documented at the API. Streaming layers take no allocator at
+  all: caller-provided buffers through exported named buffer types
+  (`snappy.WriterBuffer`, `snappy.ReaderBuffer`), comptime-sized stack scratch
+  — the whole path allocates nothing.
+- Export named buffer-type constants for every caller-provided buffer
+  (ztls pattern), and take exact pointers of them at `init`, not slices with
+  asserts.
+- Style, per Matt's own edits (2026-10-09): hoist short aliases to the top of
+  the file for anything used more than once (`const print = std.debug.print;`,
+  `const mem = std.mem;`, `const Allocator = mem.Allocator;`);
+  type-on-left with dot-init (`var rng: DefaultPrng = .init(seed);`); named
+  enums with `std.meta.stringToEnum` over inline enum chains; a blank line
+  between the std import/alias block and the fastmem import block; `in`/`out`
+  param names for reader/writer pairs; `try` propagation over catch-and-print
+  scaffolding.
 - Decode never writes past the decoded length; sentinel overrun checks prove
   it in tests.
 - A performance claim names a fleet run directory and a results file in

@@ -5,11 +5,12 @@ encoder and a SIMD-accelerated decoder. Imports only `std` and `fastmem`; no
 heap allocation on any codec path. Exposed as the `snappy` build module and
 re-exported as `zcompress.snappy`.
 
-This implements the [Snappy block format][format], not a framing/streaming
-format. There is no framing layer here by design: a consumer that needs
-framing (Xerial, LZO-style length-prefixed chunks, anything else) splits its
-input into blocks and owns the framing bytes. See "S2 vs Snappy" below for
-what is deliberately out.
+This implements the [Snappy block format][format]. The block functions have
+no framing; the streaming layer (`Reader`/`Writer`, below) adds one — this
+package's canonical stream format. A consumer that needs a different framing
+(Xerial, LZO-style length-prefixed chunks, anything else) uses the block
+functions and owns its framing bytes. See "S2 vs Snappy" below for what is
+deliberately out.
 
 ## API
 
@@ -33,6 +34,15 @@ snappy.decompressedBlockLen(input: []const u8) DecompressError!usize
 // The block-size precondition: 65536. compressBlock asserts it.
 snappy.max_block_size: usize
 
+// Streaming: a compressing Io.Writer over the framed stream.
+var w: snappy.Writer = .init(out, &wbuf);   // wbuf: snappy.WriterBuffer
+try w.writer.writeAll(bytes);               // through the Io.Writer interface
+try w.finish();
+
+// Streaming: a decompressing Io.Reader over the framed stream.
+var r: snappy.Reader = .init(in, &rbuf);    // rbuf: snappy.ReaderBuffer
+// consume through &r.reader (stream, read-family, peek-family)
+
 pub const DecompressError = error{ BufferTooSmall, DecompressionFailed };
 ```
 
@@ -49,14 +59,64 @@ Contracts, stated plainly:
 - **No hidden copies**: all copies go through `fastmem.copy`/`fastmem.set`;
   there is no `@memcpy`/`@memset` anywhere in this module, tests included.
 
+## Streaming
+
+`snappy.Writer` is a compressing `Io.Writer`; `snappy.Reader` is a
+decompressing `Io.Reader` — the `std.Io` interfaces, in-package, over this
+package's canonical framed stream format:
+
+```text
+stream := block*
+block  := u32-le compressed_length, raw-snappy-block
+```
+
+Encode splits input into uncompressed blocks of exactly `max_block_size`
+(64 KiB, the format's u16-position limit); the final block is the remainder.
+A concatenation of raw blocks is not self-delimiting on the compressed side,
+hence the explicit length prefix.
+
+The `std.compress.flate` `Compress`/`Decompress` pair is the in-tree
+precedent for this shape: an embedded interface with a
+`{drain, flush, rebase}` / `{stream, discard, readVec, rebase}` vtable,
+`@fieldParentPtr` back to the parent, a failing state after errors, and
+caller-provided buffers.
+
+Buffer ownership, in full:
+
+- `WriterBuffer` is `[max_block_size]u8`: the uncompressed accumulation
+  buffer, one block. `Writer.init(output: *Io.Writer, buffer: *WriterBuffer)`.
+- `ReaderBuffer` is `[2 * max_block_size + scratch_len]u8`: two blocks of
+  contiguous decoded serving region (so a `peek` up to two blocks stays
+  contiguous) plus the compressed-block staging region behind it.
+  `Reader.init(input: *Io.Reader, buffer: *ReaderBuffer)`.
+- Zero allocation end to end: no allocator appears anywhere in the streaming
+  API, and the compressed-output scratch is a comptime-sized stack local.
+  The full encode/decode path allocates nothing.
+- The input's own buffer must hold at least 4 bytes (or the stream must end
+  before then).
+
+Semantics:
+
+- `Writer.finish()` emits the final partial block, flushes `output`, and is
+  terminal (the writer is poisoned afterwards). `flush` mid-stream emits the
+  partial block and keeps the writer usable.
+- Full blocks stay maximal: `drain` emits one buffered block, then accepts
+  what fits of the incoming data; the machinery re-slices and retries.
+- `Reader` ends cleanly with `error.EndOfStream` at a block boundary (zero
+  bytes available; sticky) and fails closed with `error.ReadFailed` (sticky,
+  details in `err`) on any corrupt framing or block. A partial length prefix,
+  a truncated block, a declared length past staging, a garbage block, or a
+  declared decoded length over one block all fail closed.
+- The contiguous decoded-read cap is two blocks: a `peek` beyond it asserts.
+
 Files: `root.zig` (public surface), `encode.zig` (match-finder),
-`decode.zig` (SIMD decoder + golden vectors), `common.zig` (LEB128 varint),
-`bench.zig` (local benchmark).
+`decode.zig` (SIMD decoder + golden vectors), `Writer.zig` + `Reader.zig`
+(streaming `Io` layer), `common.zig` (LEB128 varint), `bench.zig` (local
+benchmark).
 
 An example CLI (`examples/snappy.zig`, `zig build example-snappy -- encode
-README.md > out`) exercises this surface end-to-end and owns the framing the
-consumer-side needs: a stream of `u32-le compressed-length + raw block`,
-split at `max_block_size`.
+README.md > out`) exercises the streaming surface end-to-end as a thin pump:
+wrap, stream, finish. The framing is the package's, not the example's.
 
 ## Encoder
 

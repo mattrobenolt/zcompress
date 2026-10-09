@@ -35,11 +35,13 @@ Apply when they match. Skip silently when they don't.
 
 ### Imports and aliases
 4. **Hoist `const testing = std.testing;` to the top of the file** alongside other std imports.
-5. **Short aliases for repeated deeply-nested std paths.** Used more than once: `const Build = std.Build;`, `const Io = std.Io;`.
+5. **Short aliases for repeated deeply-nested std paths.** Used more than once: `const Build = std.Build;`, `const Io = std.Io;`, `const print = std.debug.print;`, `const mem = std.mem;`, `const Allocator = mem.Allocator;`, `const Target = std.Target;`, `const DefaultPrng = std.Random.DefaultPrng;`.
+5a. **A blank line between the std import/alias block and the fastmem import block** (two groups, std first).
 6. **Generic-context type aliases early.** In `fn Foo(comptime X: type) type`, declare `const Y = X;` near the top and use it consistently; declare `const Self = @This();` for methods referring to the enclosing type.
 
 ### Function/identifier shape
 7. **Do not auto-add `inline fn`.** The compiler auto-inlines trivial bodies; explicit `inline fn` is a human decision driven by profiling evidence. Surface non-trivial hot-path candidates only in `manual-fix-needed`.
+7a. **Named enums with `std.meta.stringToEnum`** over inline `enum { ... }` chains in const initializers (`const Mode = enum { encode, decode };` then `stringToEnum(Mode, cmd) orelse ...`).
 8. **Free helper functions taking an enum become methods on the enum with `comptime self`.**
 9. **`const` becomes `pub const` when the decl leaks across modules.**
 

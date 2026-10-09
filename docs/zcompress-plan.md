@@ -76,17 +76,20 @@ codecs need it.
 
 ### API layers
 
-Each codec exposes up to three layers, built in this order:
+Each codec exposes two layers, built in this order:
 
 1. Block functions: pure functions over caller-owned buffers. Zero heap
-   allocation. A worst-case sizing helper bounds the output buffer. (snappy
-   today: `compressBlock`, `decompressBlock`, `maxCompressedLength`,
-   `decompressedBlockLen`.)
-2. Streaming core, where the format has framing: a Sans-I/O state machine.
-   Bytes in, bytes out; the caller owns transport and buffers. No I/O, no
-   threads, no callbacks.
-3. `std.Io` adapters: `GzipWriter`/`GzipReader`-style wrappers over the
-   streaming core, conforming to the 0.16 `std.Io` interfaces.
+   allocation. A worst-case sizing helper bounds the output buffer. (snappy:
+   `compressBlock`, `decompressBlock`, `maxCompressedLength`,
+   `decompressedBlockLen`, `max_block_size`.)
+2. Streaming, where the format has framing: `std.Io`-native, in-package — a
+   compressing `Io.Writer` and a decompressing `Io.Reader` over the codec's
+   canonical stream format (snappy: `snappy.Writer`/`snappy.Reader` over the
+   `u32-le compressed length + raw block` framing; the `std.compress.flate`
+   `Compress`/`Decompress` pair is the in-tree precedent for the shape).
+   The caller provides every buffer through exported named buffer types
+   (`snappy.WriterBuffer`, `snappy.ReaderBuffer`); scratch is comptime-sized
+   stack, so the whole path allocates nothing.
 
 An API sketch gets Matt's review before implementation. APIs are felt, not
 just specified.

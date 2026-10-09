@@ -39,6 +39,7 @@
               zigdoc
               just
               goperf
+              pv
             ];
           };
         };

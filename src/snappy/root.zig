@@ -1,8 +1,9 @@
 //! Standalone Snappy block codec (raw block format, no framing). Imports only
-//! `std`. Exposed as its own build module (`snappy`) and re-exported by the
-//! zcompress umbrella module: a hash-table match-finder encoder and a
-//! SIMD-accelerated decoder. Block functions over caller-owned buffers, zero
-//! heap allocation.
+//! `std` and `fastmem`. Exposed as its own build module (`snappy`) and
+//! re-exported by the zcompress umbrella module: a hash-table match-finder
+//! encoder, a SIMD-accelerated decoder, and a streaming `Io` layer
+//! (`Reader`/`Writer`) over the package's framed stream format. Block
+//! functions over caller-owned buffers, zero heap allocation.
 //!
 //! Format: docs/research/specs/snappy-format-description.txt
 //! (upstream: https://github.com/google/snappy/blob/main/format_description.txt)
@@ -33,9 +34,25 @@ pub const max_block_size = encode.max_block_size;
 /// `error.BufferTooSmall` when `out` is too small — size it via
 /// `maxCompressedLength`. Zero heap allocation.
 pub const compressBlock = encode.compressBlock;
+/// A compressing `Io.Writer` over the framed snappy stream
+/// (README.md, "Streaming"). Write through `&w.writer`; complete with
+/// `finish`. Zero heap allocation.
+pub const Writer = @import("Writer.zig").Writer;
+/// The caller-provided uncompressed accumulation buffer for `Writer`: one
+/// full block.
+pub const WriterBuffer = @import("Writer.zig").Buffer;
+/// A decompressing `Io.Reader` over the framed snappy stream
+/// (README.md, "Streaming"). Consume through `&r.reader`; ends cleanly with
+/// `error.EndOfStream`. Zero heap allocation.
+pub const Reader = @import("Reader.zig").Reader;
+/// The caller-provided buffer for `Reader`: two decoded blocks of contiguity
+/// plus the compressed-block staging region.
+pub const ReaderBuffer = @import("Reader.zig").Buffer;
 
 test {
     _ = encode;
     _ = decode;
+    _ = Writer;
+    _ = Reader;
     std.testing.refAllDecls(@This());
 }

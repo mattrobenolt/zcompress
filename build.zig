@@ -67,6 +67,8 @@ pub fn build(b: *Build) void {
         .root_module = snappy_example_mod,
     });
     const run_snappy_example = b.addRunArtifact(snappy_example);
+    // The CLI writes to stdout: always run, never a cached result.
+    run_snappy_example.has_side_effects = true;
     if (b.args) |args| run_snappy_example.addArgs(args);
     const snappy_example_step = b.step(
         "example-snappy",
