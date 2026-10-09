@@ -7,6 +7,12 @@ default: test
 test:
     zig build test
 
+# Fuzz every codec's targets for an iteration budget (K/M/G suffix, e.g.
+# `just fuzz 1M`). ReleaseSafe only: a Debug-mode fuzz run hits
+# ziglang/zig#30655. The budget is per fuzz target.
+fuzz LIMIT="10M":
+    zig build test -Doptimize=ReleaseSafe -Dfuzz --fuzz={{ LIMIT }}
+
 # Lint Zig sources: ziglint over the .ziglint.zon paths + the format check
 lint:
     ziglint
