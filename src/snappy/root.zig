@@ -34,23 +34,14 @@ pub const max_block_size = encode.max_block_size;
 /// `error.BufferTooSmall` when `target` is too small — size it via
 /// `maxCompressedLength`. Zero heap allocation.
 pub const compressBlock = encode.compressBlock;
-/// A compressing `Io.Writer` over the framed snappy stream
-/// (README.md, "Streaming"). Write through `&w.writer`; complete with
-/// `finish`. Zero heap allocation.
-pub const Writer = @import("Writer.zig").Writer;
-/// The caller-provided uncompressed accumulation buffer for `Writer`: one
-/// full block.
-pub const WriterBuffer = @import("Writer.zig").Buffer;
 /// A decompressing `Io.Reader` over the framed snappy stream
 /// (README.md, "Streaming"). Consume through `&r.reader`; ends cleanly with
 /// `error.EndOfStream`. Zero heap allocation.
-pub const Reader = @import("Reader.zig").Reader;
-/// The caller-provided buffer for `Reader`: a three-block serving region
-/// (two blocks of contiguous decoded reads) plus the compressed-block
-/// staging region.
-pub const ReaderBuffer = @import("Reader.zig").Buffer;
-/// The compressed-output scratch size: the exact worst case for one block.
-pub const scratch_len = @import("Writer.zig").scratch_len;
+pub const Reader = @import("Reader.zig");
+/// A compressing `Io.Writer` over the framed snappy stream
+/// (README.md, "Streaming"). Write through `&w.writer`; complete with
+/// `finish`. Zero heap allocation.
+pub const Writer = @import("Writer.zig");
 
 test {
     _ = encode;
@@ -58,5 +49,6 @@ test {
     _ = Writer;
     _ = Reader;
     _ = @import("golden.zig");
+    _ = @import("fuzz.zig");
     std.testing.refAllDecls(@This());
 }

@@ -35,7 +35,7 @@ pub const Buffer = [encode.max_block_size]u8;
 /// The compressed-output scratch size: the exact worst case for one block.
 pub const scratch_len = encode.maxCompressedLength(encode.max_block_size);
 
-pub const Writer = @This();
+const Writer = @This();
 
 writer: Io.Writer,
 output: *Io.Writer,
@@ -211,7 +211,7 @@ test "Writer: writableSliceGreedy on a full buffer emits, never drops" {
     try testing.expectEqual(3, countBlocks(out.written()));
     var rbuf: Reader.Buffer = undefined;
     var fixed_in: Io.Reader = .fixed(out.written());
-    var r: Reader.Reader = .init(&fixed_in, &rbuf);
+    var r: Reader = .init(&fixed_in, &rbuf);
     var plain: Io.Writer.Allocating = .init(gpa);
     defer plain.deinit();
     while (true) {
@@ -356,7 +356,7 @@ test "Writer: random write machinery sequences stay correct" {
 
         var rbuf: Reader.Buffer = undefined;
         var fixed_in: Io.Reader = .fixed(out.written());
-        var r: Reader.Reader = .init(&fixed_in, &rbuf);
+        var r: Reader = .init(&fixed_in, &rbuf);
         const got = try r.reader.allocRemaining(gpa, .unlimited);
         defer gpa.free(got);
         try testing.expectEqual(expect.items.len, got.len);

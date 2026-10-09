@@ -33,7 +33,7 @@ pub const Buffer = [decoded_region_len + Writer.scratch_len]u8;
 /// Two blocks of contiguous decoded serving region.
 const decoded_region_len = 3 * encode.max_block_size;
 
-pub const Reader = @This();
+const Reader = @This();
 
 /// The stream lifecycle: `streaming` until the input ends cleanly at a
 /// block boundary (`done`) or a failure sticks (`failed`, details in `err`).
