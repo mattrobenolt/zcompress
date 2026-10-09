@@ -179,12 +179,21 @@ fn readVec(r: *Io.Reader, data: [][]u8) Io.Reader.Error!usize {
 
 /// Slide the unconsumed bytes to the front; the serving region then has
 /// `decoded_region_len - end` contiguous free.
+///
+/// A capacity past the serving region (a plain consumer `peek` — the
+/// buffer capacity is the full `Buffer`, larger than the region, so std's
+/// `peek` assert does not catch it first) fails closed, never asserts.
 fn rebase(r: *Io.Reader, capacity: usize) Io.Reader.RebaseError!void {
+    const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
     const keep = r.end - r.seek;
     fastmem.move(u8, r.buffer[0..keep], r.buffer[r.seek..][0..keep]);
     r.seek = 0;
     r.end = keep;
-    assert(capacity <= decoded_region_len);
+    if (capacity > decoded_region_len) {
+        parent.state = .failed;
+        parent.err = error.StreamTooLong;
+        return error.ReadFailed;
+    }
 }
 
 test "Reader: round-trips through Writer" {
@@ -343,6 +352,28 @@ test "Reader: random consumer machinery sequences stay correct" {
         var sink: Io.Writer.Discarding = .init(&.{});
         try testing.expectError(error.EndOfStream, r.reader.stream(&sink.writer, .unlimited));
     }
+}
+
+test "Reader: a peek past the serving region fails closed" {
+    // README, "Streaming" — a request beyond the contiguous cap fails
+    // closed with `error.ReadFailed` (`err == .StreamTooLong`), never an
+    // assert. `peek` routes the consumer's request through the vtable's
+    // rebase as the capacity, so a request larger than the serving region
+    // reaches rebase itself.
+    const gpa = testing.allocator;
+    const src = "the quick brown fox jumps over the lazy dog. " ** 4000;
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var wbuf: Writer.Buffer = undefined;
+    var w: Writer = .init(&out.writer, &wbuf);
+    try w.writer.writeAll(src);
+    try w.finish();
+
+    var rbuf: Buffer = undefined;
+    var fixed_in: Io.Reader = .fixed(out.written());
+    var r: Reader = .init(&fixed_in, &rbuf);
+    try testing.expectError(error.ReadFailed, r.reader.peek(decoded_region_len + 1));
+    try testing.expectEqual(Error.StreamTooLong, r.err.?);
 }
 
 test "Reader: a contiguous request past the two-block cap fails closed" {
