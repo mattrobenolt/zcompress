@@ -152,9 +152,12 @@ fn guard(r: *Reader) ?Io.Reader.Error {
 /// `error.EndOfStream` (the caller maps it to corrupt framing).
 fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
     _ = w;
-    _ = limit;
     const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
     if (guard(parent)) |err| return err;
+    // A zero-length request is a poll (std calls vtable stream at limit 0
+    // when the buffer is nonempty): answer 0 without filling — a fill could
+    // fail `StreamTooLong` on a valid stream with buffered output.
+    if (limit == .nothing) return 0;
     return fillNextBlock(parent);
 }
 
@@ -237,6 +240,33 @@ test "Reader: golden outputs round-trip Writer -> Reader" {
             return err;
         };
     }
+}
+
+test "Reader: a zero-length stream poll does not fail the stream" {
+    // std calls vtable stream at limit 0 when the buffer is nonempty: the
+    // poll must answer 0 without filling (a fill could fail StreamTooLong
+    // on a valid stream with buffered output — the serving region cannot
+    // always hold a fresh block beside unconsumed bytes).
+    const gpa = testing.allocator;
+    const src = "the quick brown fox jumps over the lazy dog. " ** 3000;
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var wbuf: Writer.Buffer = undefined;
+    var w: Writer = .init(&out.writer, &wbuf);
+    try w.writer.writeAll(src);
+    try w.finish();
+
+    var rbuf: Buffer = undefined;
+    var fixed_in: Io.Reader = .fixed(out.written());
+    var r: Reader = .init(&fixed_in, &rbuf);
+    _ = try r.reader.peek(1);
+    var sink: Io.Writer.Discarding = .init(&.{});
+    try testing.expectEqual(@as(usize, 0), try r.reader.stream(&sink.writer, .limited(0)));
+    try testing.expect(r.err == null);
+    var plain: Io.Writer.Allocating = .init(gpa);
+    defer plain.deinit();
+    try pump(&r.reader, &plain.writer);
+    try testing.expectEqualSlices(u8, src, plain.written());
 }
 
 test "Reader: random consumer machinery sequences stay correct" {
