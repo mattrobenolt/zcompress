@@ -43,7 +43,7 @@ fn makeShape(allocator: Allocator, shape: Shape, len: usize) ![]u8 {
             for (buf) |*b| b.* = rng.random().int(u8);
         },
         .html => {
-            const phrase = "<div class=\"row\"><span>hello</span><span>kafka</span></div>";
+            const phrase = "<div class=\"row\"><span>hello</span><span>snappy</span></div>";
             var i: usize = 0;
             while (i < len) {
                 const n = @min(phrase.len, len - i);

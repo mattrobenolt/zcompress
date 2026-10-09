@@ -20,6 +20,10 @@ fmt:
 bench *ARGS:
     zig build bench -Doptimize=ReleaseFast -- {{ ARGS }}
 
+# Run an example CLI (e.g. just example snappy encode README.md > out)
+example example *args:
+    zig build example-{{ example }} -- {{ args }}
+
 # Clean build artifacts
 clean:
     rm -rf zig-out .zig-cache zig-pkg

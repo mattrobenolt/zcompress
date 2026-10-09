@@ -32,10 +32,9 @@ parallel codecs (pgzip-style), dictionary training, s2 extensions, xz/lzma
   snappy, lzw, huff0, fse, and xpress. License: BSD-3-Clause.
 - golang/snappy is BSD-3-Clause. Its test tables are the snappy golden
   vectors, including an exhaustive `length x offset x suffixLen` sweep.
-- kafka-zig `src/snappy` is a finished raw-block snappy codec: a port of
-  klauspost's `encodeBlockSnappyGo64K` encoder, an original SIMD decoder, and
-  the golang/snappy golden vectors. It lifted into this repo (see
-  THIRD_PARTY.md) with two 0.15-to-0.16 fixes.
+- The raw-block snappy codec is finished: a port of klauspost's
+  `encodeBlockSnappyGo64K` encoder, an original SIMD decoder, and the
+  golang/snappy golden vectors (attribution in THIRD_PARTY.md).
 - fastmem (same author, MIT) is the blessed copy primitive. Its inline layer
   has no loops, and large sizes call its own `no_builtin` kernels, so
   consumer-side inlining cannot idiom-match back into a `memcpy` call.
@@ -49,7 +48,7 @@ parallel codecs (pgzip-style), dictionary training, s2 extensions, xz/lzma
 
 Codecs, one at a time, each shippable alone:
 
-1. snappy — raw-block codec, lifted from kafka-zig. (M0, M1)
+1. snappy — raw-block codec. (M0, M1)
 2. flate — fast encoder plus full inflate. The core value. (M2)
 3. gzip + zlib — containers over flate, plus checksum kernels. (M3)
 4. zstd — decoder first, then the fast encoder. (M4, M5)

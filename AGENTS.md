@@ -8,13 +8,16 @@ it before you change a kernel or make a performance claim.
 ## Layout
 
 - `src/root.zig`: the umbrella module. One pub decl per codec.
-- `src/snappy/`: raw-block snappy, the first codec, lifted from kafka-zig
-  with fastmem wired into its copy paths. `encode.zig` ports the klauspost
+- `src/snappy/`: raw-block snappy, the first codec, with fastmem wired into
+  its copy paths. `encode.zig` ports the klauspost
   encoder algorithm (THIRD_PARTY.md); `decode.zig` is original, with golden
   vectors from golang/snappy; `bench.zig` is the local benchmark.
 - `docs/research/specs/`: vendored specs (RFC 1950/1951/1952, RFC 8878, the
   snappy format description) with provenance.
-- `docs/results/`: fleet results, one file per measurement (from M1).
+- `examples/`: one CLI per codec, `encode`/`decode` over a file or stdin, on
+  shared scaffolding (`examples/cli.zig`). Each CLI owns its codec's framing
+  decision — snappy's block framing is documented in `examples/snappy.zig`.
+- `docs/results/`: fleet results, one file per measurement (on demand).
 - `.pi/agents/`: the roster. The parent orchestrates; agents own lanes.
 
 ## Toolchain
@@ -35,6 +38,8 @@ it before you change a kernel or make a performance claim.
   Run it before you call Zig work done.
 - `just bench`: local benchmarks (zig-benchmark). Local numbers are never
   quoted as claims.
+- `just example snappy encode README.md > /tmp/out`: run a codec's example
+  CLI (`zig build example-snappy -- encode ...`).
 
 ## Dependencies
 

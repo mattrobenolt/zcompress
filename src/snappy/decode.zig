@@ -313,7 +313,7 @@ test "decompress: empty block" {
 
 test "decompress: literal-only block" {
     // varint(13) + literal tag (13-1)<<2=0x30 + 13 bytes.
-    const msg = "hello, kafka!";
+    const msg = "hello, snappy";
     var block: [16]u8 = undefined;
     block[0] = 0x0D;
     block[1] = 0x30;
@@ -366,7 +366,7 @@ test "decompress: corrupt block returns DecompressionFailed" {
 
 test "decompress: too-small out buffer returns BufferTooSmall" {
     // varint(13) + literal tag + 13 bytes, but out is only 4 bytes.
-    const msg = "hello, kafka!";
+    const msg = "hello, snappy";
     var block: [16]u8 = undefined;
     block[0] = 0x0D;
     block[1] = 0x30;

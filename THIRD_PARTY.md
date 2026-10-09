@@ -14,9 +14,6 @@ and dependency with a license that is not ours.
   (BSD-3-Clause) `TestDecode`, `TestDecodeCopy4`, and `TestDecodeLengthOffset`
   tables. Attribution: Copyright the Go Authors,
   https://github.com/golang/snappy (decode_test.go).
-- `src/snappy/`: lifted from kafka-zig (Apache-2.0, same author and copyright
-  holder as zcompress; the author relicensed the lift here). Upstream:
-  https://github.com/mattrobenolt/kafka-zig, `src/snappy/`.
 
 ## Vendored specs (`docs/research/specs/`)
 

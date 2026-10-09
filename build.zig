@@ -43,9 +43,47 @@ pub fn build(b: *Build) void {
         .{ .path = z.path("src/test_runner.zig"), .mode = .simple }
     else
         null;
+    const test_step = b.step("test", "Run unit tests");
+
+    // Example CLIs: one per codec (examples/), sharing examples/cli.zig.
+    // The framing decision per codec lives in its example file. Run:
+    //   zig build example-snappy -- encode README.md > out
+    const cli_mod = b.createModule(.{
+        .root_source_file = b.path("examples/cli.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const snappy_example_mod = b.createModule(.{
+        .root_source_file = b.path("examples/snappy.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "cli", .module = cli_mod },
+            .{ .name = "snappy", .module = snappy_mod },
+        },
+    });
+    const snappy_example = b.addExecutable(.{
+        .name = "snappy",
+        .root_module = snappy_example_mod,
+    });
+    const run_snappy_example = b.addRunArtifact(snappy_example);
+    if (b.args) |args| run_snappy_example.addArgs(args);
+    const snappy_example_step = b.step(
+        "example-snappy",
+        "Run the snappy example CLI (encode|decode [FILE|-])",
+    );
+    snappy_example_step.dependOn(&run_snappy_example.step);
+
+    // The example's framing test runs with the unit tests.
+    const snappy_example_tests = b.addTest(.{
+        .root_module = snappy_example_mod,
+        .test_runner = test_runner,
+    });
+    const run_snappy_example_tests = b.addRunArtifact(snappy_example_tests);
+    run_snappy_example_tests.has_side_effects = true;
+    test_step.dependOn(&run_snappy_example_tests.step);
 
     // Unit tests: one test executable per module.
-    const test_step = b.step("test", "Run unit tests");
     const snappy_tests = b.addTest(.{
         .root_module = snappy_mod,
         .test_runner = test_runner,

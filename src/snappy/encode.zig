@@ -442,7 +442,7 @@ test "encode: empty input" {
 }
 
 test "encode: short input (< min_non_literal_block_size) is a single literal" {
-    try roundTrip("hello, kafka!");
+    try roundTrip("hello, snappy");
 }
 
 test "encode: repetitive input compresses (back-references)" {

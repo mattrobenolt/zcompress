@@ -4,10 +4,9 @@ Fast, self-contained compression codecs in pure Zig. Performance in the class
 of [klauspost/compress](https://github.com/klauspost/compress), usability in
 the class of `std.compress`.
 
-Status: scaffold. snappy (raw block) is the first codec, lifted from
-[kafka-zig](https://github.com/mattrobenolt/kafka-zig) with fastmem wired into
-its copy paths. flate, gzip/zlib, zstd, and lzw follow — one at a time, each
-shippable alone. [`docs/zcompress-plan.md`](docs/zcompress-plan.md) is the
+Status: scaffold. snappy (raw block) is the first codec, with fastmem wired
+into its copy paths. flate, gzip/zlib, zstd, and lzw follow — one at a time,
+each shippable alone. [`docs/zcompress-plan.md`](docs/zcompress-plan.md) is the
 plan.
 
 Design rules:

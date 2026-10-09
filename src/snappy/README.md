@@ -53,6 +53,11 @@ Files: `root.zig` (public surface), `encode.zig` (match-finder),
 `decode.zig` (SIMD decoder + golden vectors), `common.zig` (LEB128 varint),
 `bench.zig` (local benchmark).
 
+An example CLI (`examples/snappy.zig`, `zig build example-snappy -- encode
+README.md > out`) exercises this surface end-to-end and owns the framing the
+consumer-side needs: a stream of `u32-le compressed-length + raw block`,
+split at `max_block_size`.
+
 ## Encoder
 
 A port of the algorithm in [klauspost/compress][kp]'s `encodeBlockSnappyGo64K`
@@ -74,11 +79,9 @@ as Google's C++ `CompressFragment`):
 - A repeat-offset check that catches RLE-style input without a fresh hash
   lookup.
 
-The previous implementation in kafka-zig was literal-only — it produced valid
-blocks but with a ~1:1 ratio. Real match-finding turns that into actual
-compression: on a 32 KiB block of repetitive text the ratio is ~0.05 (20:1);
-HTML and single-byte runs compress similarly. Incompressible (random) input
-correctly bails to a literal at ratio 1.0.
+Real match-finding compresses: on a 32 KiB block of repetitive text the ratio
+is ~0.05 (20:1); HTML and single-byte runs compress similarly. Incompressible
+(random) input correctly bails to a literal at ratio 1.0.
 
 Snappy copies are capped at 64 bytes, so long matches split into 60-byte
 copy-2 chunks (60, not 64, so the final remainder is guaranteed `>= 4` and
