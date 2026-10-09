@@ -25,17 +25,11 @@ const print = std.debug.print;
 
 const fastmem = @import("fastmem");
 
+const internal = @import("internal");
+const sentinel = internal.sentinel;
 const decode = @import("decode.zig");
 const decompress = decode.decompress;
 const DecompressError = decode.DecompressError;
-
-/// Sentinel byte range [0xa0, 0xc5) used to detect decoder overrun: the target
-/// is pre-filled with these (cycling) and every byte past the decoded length
-/// must be untouched. 37 is prime so a mis-written byte lands at an unrelated
-/// offset (a natural 32 would mask a 4*8-byte-off copy). The snappy golden
-/// module uses the same range for the same reason.
-const overrun_base: u8 = 0xa0;
-const overrun_len: u8 = 37;
 
 /// Comptime hex decoding, so the ported vectors keep golang/go's own hexstring
 /// spelling instead of a byte-list transcription.
@@ -100,36 +94,25 @@ pub const HuffmanFixture = struct {
     golden: []const u8,
 };
 
-fn fillSentinels(target: []u8) void {
-    for (target, 0..) |*b, i| b.* = overrun_base + @as(u8, @intCast(i % overrun_len));
-}
-
-/// Every byte from `decoded_len` on must still hold its sentinel.
-fn expectSentinels(target: []const u8, decoded_len: usize) !void {
-    for (target[decoded_len..], decoded_len..) |byte, i| {
-        try testing.expectEqual(overrun_base + @as(u8, @intCast(i % overrun_len)), byte);
-    }
-}
-
 /// Decode `source` into `target` (sentinel-filled) twice: exact-cap first, so
 /// any write past the decoded length is an out-of-bounds write, then with
 /// slack, to prove the bytes past the decoded length are untouched.
 fn checkDecode(target: []u8, source: []const u8, want: []const u8) !void {
     try testing.expect(want.len <= target.len);
 
-    fillSentinels(target);
+    sentinel.fill(target);
     const exact = try decompress(source, target[0..want.len]);
     try testing.expectEqual(want.len, exact);
     try testing.expectEqualSlices(u8, want, target[0..exact]);
 
-    fillSentinels(target);
+    sentinel.fill(target);
     const n = try decompress(source, target);
     try testing.expectEqualSlices(u8, want, target[0..n]);
-    try expectSentinels(target, n);
+    try sentinel.expect(target, n);
 }
 
 fn checkStreamCase(target: []u8, tc: StreamCase) !void {
-    fillSentinels(target);
+    sentinel.fill(target);
     const result = decompress(tc.source, target);
     switch (tc.expect) {
         .ok => |want| {
@@ -138,7 +121,7 @@ fn checkStreamCase(target: []u8, tc: StreamCase) !void {
                 return err;
             };
             try testing.expectEqualSlices(u8, want, target[0..n]);
-            try expectSentinels(target, n);
+            try sentinel.expect(target, n);
         },
         .fail => if (result) |n| {
             print("\nFAIL ({s}): expected a decode error, got {d} bytes\n", .{ tc.desc, n });
@@ -624,7 +607,7 @@ test "golden decode: golang/go TestTruncatedStreams, every prefix" {
     const data = truncated_streams_data;
     var target: [64]u8 = undefined;
     for (0..data.len) |prefix_len| {
-        fillSentinels(&target);
+        sentinel.fill(&target);
         const result = decompress(data[0..prefix_len], &target);
         if (result) |n| {
             print("\nFAIL: prefix {d} decoded {d} bytes, want Truncated\n", .{ prefix_len, n });
@@ -647,7 +630,7 @@ test "golden decode: golang/go TestReaderTruncated" {
     // past that partial output untouched.
     var target: [64]u8 = undefined;
     for (truncated_cases) |tc| {
-        fillSentinels(&target);
+        sentinel.fill(&target);
         const result = decompress(tc.source, &target);
         if (result) |n| {
             print("\nFAIL: decoded {d} bytes, want Truncated\n", .{n});
@@ -656,7 +639,7 @@ test "golden decode: golang/go TestReaderTruncated" {
             try testing.expectEqual(error.Truncated, err);
         }
         try testing.expectEqualSlices(u8, tc.partial, target[0..tc.partial.len]);
-        try expectSentinels(&target, tc.partial.len);
+        try sentinel.expect(&target, tc.partial.len);
     }
 }
 
@@ -696,7 +679,7 @@ test "golden decode: golang/go testdata huffman-* pairs" {
         try testing.expect(fixture.golden.len <= stream.len);
 
         // Verbatim: truncated, with the full input already decoded.
-        fillSentinels(target);
+        sentinel.fill(target);
         const result = decompress(fixture.golden, target);
         if (result) |n| {
             print("\nFAIL ({s}): decoded {d} bytes, want Truncated\n", .{ fixture.name, n });
@@ -705,7 +688,7 @@ test "golden decode: golang/go testdata huffman-* pairs" {
             try testing.expectEqual(error.Truncated, err);
         }
         try testing.expectEqualSlices(u8, fixture.input, target[0..fixture.input.len]);
-        try expectSentinels(target, fixture.input.len);
+        try sentinel.expect(target, fixture.input.len);
 
         // With BFINAL set on the fixture's single block: a complete stream.
         fastmem.copy(u8, stream[0..fixture.golden.len], fixture.golden);
@@ -734,7 +717,7 @@ test "golden decode: BufferTooSmall leaves the cap untouched" {
     // bytes at and past the cap are untouched.
     const source = &hex("000800f7ff11111111111111110300"); // 8 bytes of 0x11
     var target: [4]u8 = undefined;
-    fillSentinels(&target);
+    sentinel.fill(&target);
     try testing.expectError(error.BufferTooSmall, decompress(source, &target));
-    try expectSentinels(&target, 0);
+    try sentinel.expect(&target, 0);
 }

@@ -16,18 +16,17 @@ const writeUvarint = common.writeUvarint;
 
 const fastmem = @import("fastmem");
 
+const internal = @import("internal");
 const decode = @import("decode.zig");
 const decompressBlock = decode.decompressBlock;
 const decompressedBlockLength = decode.decompressedBlockLength;
 const readInt = common.readInt;
 
-/// Sentinel byte range [0xa0, 0xc5) used to detect decoder overrun: the output
-/// buffer is pre-filled with these (cycling), and after decode every byte past
-/// `dLen` must be untouched. 37 is prime so a mis-copied byte lands at an
-/// unrelated offset (a 'natural' 32 could mask a 4*8-byte-off copy). This
-/// matches golang/snappy's notPresentBase/notPresentLen.
-const overrun_base: u8 = 0xa0;
-const overrun_len: u8 = 37;
+/// The decode-overrun sentinel (src/internal/sentinel.zig): the output buffer
+/// is pre-filled with the cycling bytes, and after decode every byte past
+/// `dLen` must be untouched. This matches golang/snappy's
+/// notPresentBase/notPresentLen.
+const sentinel = internal.sentinel;
 
 /// One decode test case: `source` is a raw snappy block (varint dLen + tags),
 /// `want` is the expected decompressed bytes (empty when expecting an error),
@@ -45,11 +44,11 @@ fn checkDecodeCase(d_buf: []u8, tc: DecodeCase) !void {
     // The source must not contain the sentinel bytes, or the overrun check is
     // meaningless. (All golang vectors satisfy this by construction.)
     for (tc.source) |x| {
-        try testing.expect(!(overrun_base <= x and x < overrun_base + overrun_len));
+        try testing.expect(!(sentinel.base <= x and x < sentinel.base + sentinel.len));
     }
 
     // Pre-fill d_buf with the cycling sentinel.
-    for (d_buf, 0..) |*b, j| b.* = overrun_base + @as(u8, @intCast(j % overrun_len));
+    sentinel.fill(d_buf);
 
     // dLen is the leading varint; size the output window to it.
     var vp: usize = 0;
@@ -69,9 +68,7 @@ fn checkDecodeCase(d_buf: []u8, tc: DecodeCase) !void {
     // Overrun: every case, pass or fail — every byte from dLen onward must
     // still hold its sentinel (a failed decode may write partial output
     // within dLen, never past it).
-    for (d_buf[d_len..], 0..) |x, j| {
-        try testing.expectEqual(overrun_base + @as(u8, @intCast((d_len + j) % overrun_len)), x);
-    }
+    try sentinel.expect(d_buf, d_len);
 }
 
 /// The golang/snappy `TestDecode` golden vector table, ported verbatim from
@@ -398,8 +395,7 @@ test "golden decode: literal + copy2 + literal (golang TestDecodeLengthOffset)" 
                 const source = input_buf[0..p];
 
                 // Pre-fill got_buf with sentinels and decode.
-                for (&got_buf, 0..) |*b, j| b.* = overrun_base +
-                    @as(u8, @intCast(j % overrun_len));
+                sentinel.fill(&got_buf);
                 const n = decompressBlock(source, got_buf[0..total_len]) catch |err| {
                     print("\nFAIL length={d} offset={d} suffixLen={d}: {s}\n", .{
                         length, offset, suffix_len, @errorName(err),
@@ -421,12 +417,7 @@ test "golden decode: literal + copy2 + literal (golang TestDecodeLengthOffset)" 
                 try testing.expectEqualSlices(u8, want_buf[0..w], got_buf[0..n]);
 
                 // Overrun check: bytes past total_len must be untouched.
-                for (got_buf[total_len..], 0..) |x, j| {
-                    try testing.expectEqual(
-                        overrun_base + @as(u8, @intCast((total_len + j) % overrun_len)),
-                        x,
-                    );
-                }
+                try sentinel.expect(&got_buf, total_len);
             }
         }
     }

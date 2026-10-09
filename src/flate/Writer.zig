@@ -30,6 +30,8 @@ const DefaultPrng = std.Random.DefaultPrng;
 
 const fastmem = @import("fastmem");
 
+const internal = @import("internal");
+const sentinel = internal.sentinel;
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
 const max_block_size = encode.max_block_size;
@@ -272,20 +274,6 @@ fn rebase(w: *Io.Writer, preserve: usize, capacity: usize) Io.Writer.Error!void 
 // the decoded length must be untouched.
 // ---------------------------------------------------------------------------
 
-/// Sentinel byte range [0xa0, 0xc5), as in golden.zig and encode.zig.
-const overrun_base: u8 = 0xa0;
-const overrun_len: u8 = 37;
-
-fn fillSentinels(target: []u8) void {
-    for (target, 0..) |*b, i| b.* = overrun_base + @as(u8, @intCast(i % overrun_len));
-}
-
-fn expectSentinels(target: []const u8, decoded_len: usize) !void {
-    for (target[decoded_len..], decoded_len..) |byte, i| {
-        try testing.expectEqual(overrun_base + @as(u8, @intCast(i % overrun_len)), byte);
-    }
-}
-
 /// Encode `source` through `Writer`, decode with the one-shot decoder, expect
 /// identity with the sentinel rule enforced.
 fn roundTrip(source: []const u8) !void {
@@ -299,13 +287,13 @@ fn roundTrip(source: []const u8) !void {
 
     try golden.expectFinalEmptyBlock(out.written());
 
-    const target = try gpa.alloc(u8, source.len + overrun_len);
+    const target = try gpa.alloc(u8, source.len + sentinel.len);
     defer gpa.free(target);
-    fillSentinels(target);
+    sentinel.fill(target);
     const n = try decode.decompress(out.written(), target);
     try testing.expectEqual(source.len, n);
     try testing.expectEqualSlices(u8, source, target[0..n]);
-    try expectSentinels(target, n);
+    try sentinel.expect(target, n);
 }
 
 test "Writer: empty input is the final empty block" {
@@ -441,10 +429,10 @@ test "Writer: flush mid-stream emits the partial block and stays usable" {
 
     const target = try gpa.alloc(u8, 64);
     defer gpa.free(target);
-    fillSentinels(target);
+    sentinel.fill(target);
     const n = try decode.decompress(out.written(), target);
     try testing.expectEqualStrings("hello, flate", target[0..n]);
-    try expectSentinels(target, n);
+    try sentinel.expect(target, n);
 }
 
 test "Writer: writableSliceGreedy on a full block emits, never drops" {
@@ -470,16 +458,16 @@ test "Writer: writableSliceGreedy on a full block emits, never drops" {
     try w.writer.writeAll("c" ** 1000);
     try w.finish();
 
-    const target = try gpa.alloc(u8, 2 * max_block_size + 1000 + overrun_len);
+    const target = try gpa.alloc(u8, 2 * max_block_size + 1000 + sentinel.len);
     defer gpa.free(target);
-    fillSentinels(target);
+    sentinel.fill(target);
     const n = try decode.decompress(out.written(), target);
     try testing.expectEqual(2 * max_block_size + 1000, n);
     try testing.expectEqual(@as(u8, 'a'), target[0]);
     try testing.expectEqual(@as(u8, 'b'), target[max_block_size]);
     try testing.expectEqual(@as(u8, 'c'), target[2 * max_block_size]);
     try testing.expectEqual(@as(u8, 'c'), target[n - 1]);
-    try expectSentinels(target, n);
+    try sentinel.expect(target, n);
 }
 
 test "Writer: a stream crossing the 4-GiB window-base wrap round-trips" {
@@ -560,10 +548,10 @@ test "Writer: the stored-only level emits stored blocks through the stream" {
     try testing.expectEqual(@as(u8, 0), out.written()[0]);
 
     var d_buf: [input_len + 1]u8 = undefined;
-    fillSentinels(&d_buf);
+    sentinel.fill(&d_buf);
     const n = try decode.decompress(out.written(), d_buf[0..input_len]);
     try testing.expectEqualSlices(u8, input, d_buf[0..n]);
-    try expectSentinels(&d_buf, n);
+    try sentinel.expect(&d_buf, n);
 }
 
 test "Writer: the ratio level is rejected, never silently aliased" {
@@ -675,13 +663,13 @@ test "Writer: random write machinery sequences stay correct" {
         try w.finish();
 
         // Decode with the landed one-shot decoder — independent of Reader.
-        const target = try gpa.alloc(u8, expect.items.len + overrun_len);
+        const target = try gpa.alloc(u8, expect.items.len + sentinel.len);
         defer gpa.free(target);
-        fillSentinels(target);
+        sentinel.fill(target);
         const n = try decode.decompress(out.written(), target);
         try testing.expectEqual(expect.items.len, n);
         try testing.expectEqualSlices(u8, expect.items, target[0..n]);
-        try expectSentinels(target, n);
+        try sentinel.expect(target, n);
     }
 }
 

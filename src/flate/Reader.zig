@@ -30,6 +30,8 @@ const DefaultPrng = std.Random.DefaultPrng;
 
 const fastmem = @import("fastmem");
 
+const internal = @import("internal");
+const sentinel = internal.sentinel;
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
 const history_len = encode.history_len;
@@ -72,10 +74,6 @@ pub const Error = error{
 /// An alias for `Error` that `Bits` can name: a container declaration shadows
 /// the file scope inside it, so `Bits.Error` cannot refer to `Error` directly.
 const ReaderError = Error;
-
-/// The stream lifecycle: `streaming` until the final block's output is
-/// complete (`done`) or a failure sticks (`failed`, details in `err`).
-const State = enum { streaming, done, failed };
 
 /// Where the decoder is in the block structure (`§3.2.3`): a resume point, so
 /// a window that fills mid-block picks up exactly where it stopped.
@@ -195,17 +193,19 @@ final: bool = false,
 /// The dynamic block's tables (`§3.2.7`), rebuilt per block.
 literal: decode.LitDecoder = .{},
 distance: decode.DistDecoder = .{},
-state: State = .streaming,
+/// The stream lifecycle (src/internal/reader.zig): `streaming` until the
+/// final block's output is complete (`done`) or a failure sticks (`failed`,
+/// details in `err`).
+state: internal.reader.State = .streaming,
 /// Detailed error once `state == .failed`; the interface reports
 /// `error.ReadFailed`.
 err: ?Error = null,
 
-const vtable: Io.Reader.VTable = .{
-    .stream = stream,
-    .discard = discard,
-    .readVec = readVec,
-    .rebase = rebase,
-};
+/// The generated `Io.Reader` entries (src/internal/README.md, "The Io codec
+/// pattern book"): the sticky guard, the zero-length poll, and the
+/// fill-and-return-0 count are structural. `fill` is the pump; `rebase`
+/// owns the window's capacity policy.
+const vtable = internal.reader.VTable(Reader, fill, rebase).vtable;
 
 /// Wrap `input` (a raw deflate stream) with `buffer` as the decoded window.
 /// Consume through `&r.reader` (`stream`, `read`-family, `peek`-family); the
@@ -414,65 +414,30 @@ fn record(r: *Reader, result: Error!usize) Io.Reader.Error!usize {
 /// README's rule is that no partial output is trusted past the error, so a
 /// failed reader serves the error and nothing else — buffered bytes included.
 fn fail(r: *Reader, err: Error) Io.Reader.Error {
-    r.state = .failed;
-    r.err = err;
     r.reader.seek = r.reader.end;
-    return error.ReadFailed;
+    return internal.reader.fail(Error, &r.state, &r.err, err);
 }
 
-/// The sticky guard shared by the vtable entries: a failed reader stays
-/// failed, a done reader stays at the clean end.
-fn guard(r: *Reader) ?Io.Reader.Error {
-    return switch (r.state) {
-        .failed => error.ReadFailed,
-        .done => error.EndOfStream,
-        .streaming => null,
-    };
+/// The generated entries' fill: `fillWindow`'s detailed errors through
+/// `record`, so every failure is the interface's `error.ReadFailed` with the
+/// detail sticky in `err`. The count is ignored — the data lands in the
+/// window (the VTable's store-in-buffer mode), not in the caller's writer.
+fn fill(r: *Reader) Io.Reader.Error!usize {
+    return r.record(r.fillWindow());
 }
 
-fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
-    _ = w;
-    const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
-    if (guard(parent)) |err| return err;
-    // A zero-length request is a poll (std calls vtable stream at limit 0
-    // when the buffer is nonempty): answer 0 without filling — a fill could
-    // fail `StreamTooLong` on a valid stream with buffered output.
-    if (limit == .nothing) return 0;
-    // The data lands in the window, not in `w` (the vtable's "store data in
-    // `buffer`, modifying `seek` and `end`" mode), so the count is 0: the
-    // caller's next call serves the buffered bytes.
-    _ = try parent.record(parent.fillWindow());
-    return 0;
-}
-
-fn discard(r: *Io.Reader, limit: Io.Limit) Io.Reader.Error!usize {
-    const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
-    if (guard(parent)) |err| return err;
-    _ = try parent.record(parent.fillWindow());
-    const n = limit.minInt(r.end - r.seek);
-    r.seek += n;
-    return n;
-}
-
-fn readVec(r: *Io.Reader, data: [][]u8) Io.Reader.Error!usize {
-    _ = data;
-    const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
-    if (guard(parent)) |err| return err;
-    _ = try parent.record(parent.fillWindow());
-    return 0;
-}
-
-/// Make room for `capacity` more buffered bytes: slide the unconsumed bytes
-/// and the retained history to the front. A slide frees at least
-/// `history_len + unconsumed` bytes, so every request of at most
-/// `history_len` bytes is served; a request the window cannot hold at the
-/// consumer's position fails closed with `error.ReadFailed`
-/// (`err == .StreamTooLong`), never an assert (README, "Streaming").
-fn rebase(r: *Io.Reader, capacity: usize) Io.Reader.RebaseError!void {
-    const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
-    if (guard(parent)) |err| return err;
-    _ = parent.slide();
-    if (r.buffer.len - r.seek < capacity) _ = try parent.record(error.StreamTooLong);
+/// The generated entries' rebase hook: make room for `capacity` more
+/// buffered bytes by sliding the unconsumed bytes and the retained history to
+/// the front. A slide frees at least `history_len + unconsumed` bytes, so
+/// every request of at most `history_len` bytes is served; a request the
+/// window cannot hold at the consumer's position fails closed with
+/// `error.ReadFailed` (`err == .StreamTooLong`), never an assert (README,
+/// "Streaming").
+fn rebase(r: *Reader, capacity: usize) Io.Reader.RebaseError!void {
+    _ = r.slide();
+    if (r.reader.buffer.len - r.reader.seek < capacity) {
+        return fail(r, error.StreamTooLong);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -480,20 +445,6 @@ fn rebase(r: *Io.Reader, capacity: usize) Io.Reader.RebaseError!void {
 // pre-filled with cycling sentinels and every byte past the decoded length
 // must be untouched.
 // ---------------------------------------------------------------------------
-
-/// Sentinel byte range [0xa0, 0xc5), as in golden.zig and encode.zig.
-const overrun_base: u8 = 0xa0;
-const overrun_len: u8 = 37;
-
-fn fillSentinels(target: []u8) void {
-    for (target, 0..) |*b, i| b.* = overrun_base + @as(u8, @intCast(i % overrun_len));
-}
-
-fn expectSentinels(target: []const u8, decoded_len: usize) !void {
-    for (target[decoded_len..], decoded_len..) |byte, i| {
-        try testing.expectEqual(overrun_base + @as(u8, @intCast(i % overrun_len)), byte);
-    }
-}
 
 /// Pump `r` into `w` until the clean end of stream.
 fn pump(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamError!void {
@@ -522,16 +473,16 @@ fn roundTrip(source: []const u8) !void {
     try w.writer.writeAll(source);
     try w.finish();
 
-    const target = try gpa.alloc(u8, source.len + overrun_len);
+    const target = try gpa.alloc(u8, source.len + sentinel.len);
     defer gpa.free(target);
-    fillSentinels(target);
+    sentinel.fill(target);
     var rbuf: Buffer = undefined;
     var fixed_in: Io.Reader = .fixed(compressed.written());
     var r: Reader = .init(&fixed_in, &rbuf);
     const n = try decodeInto(&r.reader, target);
     try testing.expectEqual(source.len, n);
     try testing.expectEqualSlices(u8, source, target[0..n]);
-    try expectSentinels(target, n);
+    try sentinel.expect(target, n);
     // The whole stream is consumed, nothing after it.
     try testing.expectEqual(compressed.written().len, fixed_in.seek);
 }
@@ -616,9 +567,9 @@ test "Reader: golden golang/go vectors through the streaming reader" {
     for (golden.stream_cases) |tc| {
         switch (tc.expect) {
             .ok => |want| {
-                const target = try gpa.alloc(u8, want.len + overrun_len);
+                const target = try gpa.alloc(u8, want.len + sentinel.len);
                 defer gpa.free(target);
-                fillSentinels(target);
+                sentinel.fill(target);
                 var rbuf: Buffer = undefined;
                 var fixed_in: Io.Reader = .fixed(tc.source);
                 var r: Reader = .init(&fixed_in, &rbuf);
@@ -627,7 +578,7 @@ test "Reader: golden golang/go vectors through the streaming reader" {
                     return err;
                 };
                 try testing.expectEqualSlices(u8, want, target[0..n]);
-                try expectSentinels(target, n);
+                try sentinel.expect(target, n);
                 // The Reader stops at the stream's last byte. Go's vectors
                 // carry at most one byte of padding after it (the "spanning
                 // repeater code" vector's trailing zero), which must NOT be
@@ -713,9 +664,9 @@ test "Reader: golang/go huffman-* fixtures decode through the stream" {
         fastmem.copy(u8, completed, fixture.golden);
         completed[0] |= 1; // BFINAL on the fixture's single block header
 
-        const target = try gpa.alloc(u8, fixture.input.len + overrun_len);
+        const target = try gpa.alloc(u8, fixture.input.len + sentinel.len);
         defer gpa.free(target);
-        fillSentinels(target);
+        sentinel.fill(target);
         var rbuf2: Buffer = undefined;
         var fixed_in2: Io.Reader = .fixed(completed);
         var r2: Reader = .init(&fixed_in2, &rbuf2);
@@ -725,7 +676,7 @@ test "Reader: golang/go huffman-* fixtures decode through the stream" {
         };
         try testing.expectEqual(fixture.input.len, n);
         try testing.expectEqualSlices(u8, fixture.input, target[0..n]);
-        try expectSentinels(target, n);
+        try sentinel.expect(target, n);
         try testing.expectEqual(completed.len, fixed_in2.seek);
     }
 }

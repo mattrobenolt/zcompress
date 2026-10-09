@@ -19,14 +19,27 @@ pub fn build(b: *Build) void {
     });
     const fastmem_mod = fastmem_dep.module("fastmem");
 
+    // The codec-agnostic shares (docs/zcompress-plan.md, "Architecture"):
+    // a private module the codecs import in their test files, never a
+    // re-export of the umbrella module or a codec barrel. A codec lifts out
+    // of the repo with `src/internal/` in tow, wired the same way.
+    const internal_mod = b.createModule(.{
+        .root_source_file = b.path("src/internal/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    internal_mod.addImport("fastmem", fastmem_mod);
+
     // Codecs: one module each, self-contained (imports only `std` and
-    // `fastmem`). A codec lifts out of the repo with its directory.
+    // `fastmem`, plus the in-repo `internal` share). A codec lifts out of
+    // the repo with its directory.
     const snappy_mod = b.addModule("snappy", .{
         .root_source_file = b.path("src/snappy/root.zig"),
         .target = target,
         .optimize = optimize,
     });
     snappy_mod.addImport("fastmem", fastmem_mod);
+    snappy_mod.addImport("internal", internal_mod);
 
     const flate_mod = b.addModule("flate", .{
         .root_source_file = b.path("src/flate/root.zig"),
@@ -34,6 +47,7 @@ pub fn build(b: *Build) void {
         .optimize = optimize,
     });
     flate_mod.addImport("fastmem", fastmem_mod);
+    flate_mod.addImport("internal", internal_mod);
 
     // The umbrella module re-exports each codec.
     const zcompress_mod = b.addModule("zcompress", .{

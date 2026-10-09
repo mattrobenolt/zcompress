@@ -43,6 +43,8 @@ const DefaultPrng = std.Random.DefaultPrng;
 
 const fastmem = @import("fastmem");
 
+const internal = @import("internal");
+const sentinel = internal.sentinel;
 const decode = @import("decode.zig");
 const golden = @import("golden.zig");
 
@@ -788,22 +790,6 @@ pub fn compress(
 // decoded length must be untouched.
 // ---------------------------------------------------------------------------
 
-/// Sentinel byte range [0xa0, 0xc5), the same as golden.zig's: a mis-written
-/// byte lands at an unrelated offset (37 is prime, so a 4- or 8-byte-off copy
-/// cannot alias).
-const overrun_base: u8 = 0xa0;
-const overrun_len: u8 = 37;
-
-fn fillSentinels(target: []u8) void {
-    for (target, 0..) |*b, i| b.* = overrun_base + @as(u8, @intCast(i % overrun_len));
-}
-
-fn expectSentinels(target: []const u8, decoded_len: usize) !void {
-    for (target[decoded_len..], decoded_len..) |byte, i| {
-        try testing.expectEqual(overrun_base + @as(u8, @intCast(i % overrun_len)), byte);
-    }
-}
-
 /// The final empty fixed block's ten bits, in wire order (LSB of this value is
 /// the first bit on the wire): BFINAL=1, BTYPE=01, then the end-of-block code.
 /// Assert the stream's last block is the final empty fixed block (README,
@@ -824,13 +810,13 @@ fn roundTrip(input: []const u8) !void {
     try testing.expect(clen <= bound);
     try golden.expectFinalEmptyBlock(comp[0..clen]);
 
-    const target = try allocator.alloc(u8, input.len + overrun_len);
+    const target = try allocator.alloc(u8, input.len + sentinel.len);
     defer allocator.free(target);
-    fillSentinels(target);
+    sentinel.fill(target);
     const n = try decode.decompress(comp[0..clen], target);
     try testing.expectEqual(input.len, n);
     try testing.expectEqualSlices(u8, input, target[0..n]);
-    try expectSentinels(target, n);
+    try sentinel.expect(target, n);
 }
 
 /// Corpus shapes, the same set the bench uses: repetitive text, PRNG bytes
@@ -1311,11 +1297,11 @@ test "emit: flate-notes §3.2 stream 2 tokens pack the distance extra bits LSB-f
     // The notes' stream decodes to 73 bytes of 'A' (70 literals + a 3-byte
     // match from distance 67); so must ours.
     var decoded: [80]u8 = undefined;
-    fillSentinels(&decoded);
+    sentinel.fill(&decoded);
     const n = try decode.decompress(target[0..w.pos], &decoded);
     try testing.expectEqual(@as(usize, 73), n);
     for (decoded[0..n]) |byte| try testing.expectEqual(@as(u8, 'A'), byte);
-    try expectSentinels(&decoded, n);
+    try sentinel.expect(&decoded, n);
 }
 
 test "emit: long matches split at 258 with a legal tail" {
@@ -1370,13 +1356,13 @@ test "compress: every length and distance code round trips" {
     const clen = try compress(&input, comp, .{});
     try testing.expect(clen <= maxCompressedLength(input.len));
 
-    const back = try allocator.alloc(u8, input.len + overrun_len);
+    const back = try allocator.alloc(u8, input.len + sentinel.len);
     defer allocator.free(back);
-    fillSentinels(back);
+    sentinel.fill(back);
     const n = try decode.decompress(comp[0..clen], back);
     try testing.expectEqual(input.len, n);
     try testing.expectEqualSlices(u8, input[0..n], back[0..n]);
-    try expectSentinels(back, n);
+    try sentinel.expect(back, n);
 
     // Runs of every length 3-258 at distance 1.
     for (3..259) |length| {

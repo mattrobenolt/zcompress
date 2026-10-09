@@ -45,6 +45,8 @@ const Smith = testing.Smith;
 
 const fastmem = @import("fastmem");
 
+const internal = @import("internal");
+const sentinel = internal.sentinel;
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
 const golden = @import("golden.zig");
@@ -55,45 +57,9 @@ const Writer = @import("Writer.zig");
 // Shared harness
 // ---------------------------------------------------------------------------
 
-/// The sentinel byte range [0xa0, 0xc5) from the golden vectors: decode targets
-/// are pre-filled with these cycling, and every byte past the decoded length
-/// must be untouched afterward. Period 37 (prime) so a mis-copied byte lands at
-/// an unrelated phase, where a power of two could mask an 8-byte-off copy.
-const sentinel_base: u8 = 0xa0;
-const sentinel_len: usize = 37;
-
 /// Bytes past the decoded length checked on every decode: an out-of-bounds
 /// write (a 16-byte SIMD store, a 64-byte copy chunk) lands in this region.
 const guard_len: usize = 256;
-
-/// The sentinel cycle, materialized once so fills are chunked copies.
-const sentinel_pattern: [sentinel_len]u8 = blk: {
-    var pattern: [sentinel_len]u8 = undefined;
-    for (&pattern, 0..) |*b, i| b.* = sentinel_base + @as(u8, @intCast(i));
-    break :blk pattern;
-};
-
-/// The sentinel byte that must sit at absolute index `i`.
-fn sentinelAt(i: usize) u8 {
-    return sentinel_base + @as(u8, @intCast(i % sentinel_len));
-}
-
-/// Pre-fill `buf` with the cycling sentinel, from index 0: the phase is the
-/// absolute buffer index, so a partial fill must start there.
-fn fillSentinels(buf: []u8) void {
-    var i: usize = 0;
-    while (i + sentinel_len <= buf.len) : (i += sentinel_len) {
-        fastmem.copy(u8, buf[i..][0..sentinel_len], &sentinel_pattern);
-    }
-    fastmem.copy(u8, buf[i..], sentinel_pattern[0 .. buf.len - i]);
-}
-
-/// Every byte of the filled region `buf[0..filled]` from `from` on must still
-/// hold its sentinel: a decode wrote past the length it was allowed.
-fn checkSentinels(buf: []const u8, from: usize, filled: usize) !void {
-    assert(from <= filled);
-    for (buf[from..filled], from..) |x, i| try testing.expectEqual(sentinelAt(i), x);
-}
 
 /// A Smith-chosen value in `[at_least, at_most]`. `Smith.valueRangeAtMost`
 /// rejects `usize` (no fixed bitsize), so bounded lengths go through a `u32`
@@ -243,11 +209,11 @@ fn reencodeRoundTrip(bytes: []const u8, smith: *Smith) !void {
     try testing.expect(c_len <= encode.maxCompressedLength(bytes.len));
 
     var plain: [decode_window_len + guard_len]u8 = undefined;
-    fillSentinels(&plain);
+    sentinel.fill(&plain);
     const n = try decode.decompress(compressed[0..c_len], plain[0..bytes.len]);
     try testing.expectEqual(bytes.len, n);
     try testing.expectEqualSlices(u8, bytes, plain[0..n]);
-    try checkSentinels(&plain, n, plain.len);
+    try sentinel.expect(&plain, n);
 }
 
 /// Target 1: arbitrary bytes into the one-shot decoder.
@@ -266,7 +232,7 @@ fn fuzzBlockDecode(_: void, smith: *Smith) anyerror!void {
 
     const window_len = windowShape(smith);
     var window: [decode_window_len + guard_len]u8 = undefined;
-    fillSentinels(window[0 .. window_len + guard_len]);
+    sentinel.fill(window[0 .. window_len + guard_len]);
 
     const target = window[0..window_len];
     if (decode.decompress(source, target)) |n| {
@@ -281,7 +247,7 @@ fn fuzzBlockDecode(_: void, smith: *Smith) anyerror!void {
     }
 
     // Overrun: pass or fail, nothing at or past the window's length moved.
-    try checkSentinels(&window, window_len, window_len + guard_len);
+    try sentinel.expect(window[0 .. window_len + guard_len], window_len);
 }
 
 /// Seed corpus for target 1: the committed micro-streams (one per block kind),
@@ -469,18 +435,18 @@ fn fuzzRoundTrip(_: void, smith: *Smith) anyerror!void {
     // Exact cap first: a decoder that writes past the decoded length lands in
     // the guard region, not past the array (the sentinel check is what proves
     // it did not write there).
-    fillSentinels(&plain_buf);
+    sentinel.fill(&plain_buf);
     const n = try decode.decompress(compressed, plain_buf[0..source.len]);
     try testing.expectEqual(source.len, n);
     try testing.expectEqualSlices(u8, source, plain_buf[0..n]);
-    try checkSentinels(&plain_buf, n, plain_buf.len);
+    try sentinel.expect(&plain_buf, n);
 
     // Then with slack, so the bytes past the decoded length are checked too.
-    fillSentinels(&plain_buf);
+    sentinel.fill(&plain_buf);
     const m = try decode.decompress(compressed, &plain_buf);
     try testing.expectEqual(n, m);
     try testing.expectEqualSlices(u8, source, plain_buf[0..m]);
-    try checkSentinels(&plain_buf, m, plain_buf.len);
+    try sentinel.expect(&plain_buf, m);
 }
 
 test "flate fuzz: one-shot round trip" {
@@ -1207,25 +1173,25 @@ fn fuzzAmplification(_: void, smith: *Smith) anyerror!void {
     if (source.len > 0) {
         const caps = [_]usize{ source.len - 1, rangeAtMost(smith, 0, source.len - 1) };
         for (caps) |cap| {
-            fillSentinels(&window);
+            sentinel.fill(&window);
             try testing.expectError(error.BufferTooSmall, decode.decompress(bomb, window[0..cap]));
-            try checkSentinels(&window, cap, window.len);
+            try sentinel.expect(&window, cap);
         }
     }
 
     // At the decoded length: exact, and the guard region is the caller's.
-    fillSentinels(&window);
+    sentinel.fill(&window);
     const n = try decode.decompress(bomb, window[0..source.len]);
     try testing.expectEqual(source.len, n);
     try testing.expectEqualSlices(u8, source, window[0..n]);
-    try checkSentinels(&window, n, window.len);
+    try sentinel.expect(&window, n);
 
     // Above it: the same, with the whole window as the cap.
-    fillSentinels(&window);
+    sentinel.fill(&window);
     const m = try decode.decompress(bomb, &window);
     try testing.expectEqual(source.len, m);
     try testing.expectEqualSlices(u8, source, window[0..m]);
-    try checkSentinels(&window, m, window.len);
+    try sentinel.expect(&window, m);
 }
 
 /// Seeds for target 7: a run and a phrase, at the fast and stored-only levels,

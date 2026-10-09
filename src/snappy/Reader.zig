@@ -8,7 +8,8 @@
 //!
 //! The input's own buffer must hold at least 4 bytes (or the stream must end
 //! before then). The contiguous decoded read cap is two blocks
-//! (`decoded_region_len`): a `peek` beyond it asserts.
+//! (`decoded_region_len`): a `peek` beyond it fails closed (`err ==
+//! .StreamTooLong`), never an assert.
 
 const std = @import("std");
 const Io = std.Io;
@@ -19,6 +20,7 @@ const DefaultPrng = std.Random.DefaultPrng;
 
 const fastmem = @import("fastmem");
 
+const internal = @import("internal");
 const common = @import("common.zig");
 const readInt = common.readInt;
 const decode = @import("decode.zig");
@@ -35,10 +37,6 @@ const decoded_region_len = 3 * encode.max_block_size;
 
 const Reader = @This();
 
-/// The stream lifecycle: `streaming` until the input ends cleanly at a
-/// block boundary (`done`) or a failure sticks (`failed`, details in `err`).
-const State = enum { streaming, done, failed };
-
 /// The detailed error recorded once `state == .failed` (the interface reports
 /// `error.ReadFailed`): framing errors are ours (`Truncated`, `InvalidStream`,
 /// `StreamTooLong`), block errors come from `decode.DecompressError`, and
@@ -52,17 +50,19 @@ pub const Error = error{
 reader: Io.Reader,
 input: *Io.Reader,
 staging: *[Writer.scratch_len]u8,
-state: State = .streaming,
+/// The stream lifecycle (src/internal/reader.zig): `streaming` until the
+/// input ends cleanly at a block boundary (`done`) or a failure sticks
+/// (`failed`, details in `err`).
+state: internal.reader.State = .streaming,
 /// Detailed error once `state == .failed`; the interface reports
 /// `error.ReadFailed`.
 err: ?Error = null,
 
-const vtable: Io.Reader.VTable = .{
-    .stream = stream,
-    .discard = discard,
-    .readVec = readVec,
-    .rebase = rebase,
-};
+/// The generated `Io.Reader` entries (src/internal/README.md, "The Io codec
+/// pattern book"): the sticky guard, the zero-length poll, and the
+/// fill-and-return-0 count are structural. `fillNextBlock` is the pump;
+/// `rebase` owns the region's capacity policy.
+const vtable = internal.reader.VTable(Reader, fillNextBlock, rebase).vtable;
 
 /// Wrap `input` (a framed snappy stream) with `buffer` for decoded output.
 /// Consume through `&r.reader` (`stream`, `read`-family, `peek`-family);
@@ -133,67 +133,22 @@ fn fillNextBlock(r: *Reader) Io.Reader.Error!usize {
 }
 
 fn fail(r: *Reader, err: Error) Io.Reader.Error {
-    r.state = .failed;
-    r.err = err;
-    return error.ReadFailed;
+    return internal.reader.fail(Error, &r.state, &r.err, err);
 }
 
-/// The sticky guard shared by the vtable entries: a failed reader stays
-/// failed, a done reader stays at the clean end.
-fn guard(r: *Reader) ?Io.Reader.Error {
-    return switch (r.state) {
-        .failed => error.ReadFailed,
-        .done => error.EndOfStream,
-        .streaming => null,
-    };
-}
-
-/// Read exactly `dest.len` bytes from `input`. A short input is
-/// `error.EndOfStream` (the caller maps it to corrupt framing).
-fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!usize {
-    _ = w;
-    const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
-    if (guard(parent)) |err| return err;
-    // A zero-length request is a poll (std calls vtable stream at limit 0
-    // when the buffer is nonempty): answer 0 without filling — a fill could
-    // fail `StreamTooLong` on a valid stream with buffered output.
-    if (limit == .nothing) return 0;
-    return fillNextBlock(parent);
-}
-
-fn discard(r: *Io.Reader, limit: Io.Limit) Io.Reader.Error!usize {
-    const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
-    if (guard(parent)) |err| return err;
-    _ = try fillNextBlock(parent);
-    const n = limit.minInt(r.end - r.seek);
-    r.seek += n;
-    return n;
-}
-
-fn readVec(r: *Io.Reader, data: [][]u8) Io.Reader.Error!usize {
-    _ = data;
-    const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
-    if (guard(parent)) |err| return err;
-    return fillNextBlock(parent);
-}
-
-/// Slide the unconsumed bytes to the front; the serving region then has
-/// `decoded_region_len - end` contiguous free.
+/// The generated entries' rebase hook: slide the unconsumed bytes to the
+/// front, so the serving region then has `decoded_region_len - end`
+/// contiguous free.
 ///
 /// A capacity past the serving region (a plain consumer `peek` — the
 /// buffer capacity is the full `Buffer`, larger than the region, so std's
 /// `peek` assert does not catch it first) fails closed, never asserts.
-fn rebase(r: *Io.Reader, capacity: usize) Io.Reader.RebaseError!void {
-    const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
-    const keep = r.end - r.seek;
-    fastmem.move(u8, r.buffer[0..keep], r.buffer[r.seek..][0..keep]);
-    r.seek = 0;
-    r.end = keep;
-    if (capacity > decoded_region_len) {
-        parent.state = .failed;
-        parent.err = error.StreamTooLong;
-        return error.ReadFailed;
-    }
+fn rebase(r: *Reader, capacity: usize) Io.Reader.RebaseError!void {
+    const keep = r.reader.end - r.reader.seek;
+    fastmem.move(u8, r.reader.buffer[0..keep], r.reader.buffer[r.reader.seek..][0..keep]);
+    r.reader.seek = 0;
+    r.reader.end = keep;
+    if (capacity > decoded_region_len) return fail(r, error.StreamTooLong);
 }
 
 test "Reader: round-trips through Writer" {

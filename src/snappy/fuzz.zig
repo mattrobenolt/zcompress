@@ -32,18 +32,13 @@ const Smith = testing.Smith;
 
 const fastmem = @import("fastmem");
 
+const internal = @import("internal");
+const sentinel = internal.sentinel;
 const common = @import("common.zig");
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
 const Reader = @import("Reader.zig");
 const Writer = @import("Writer.zig");
-
-/// The sentinel byte range [0xa0, 0xc5) from the golden vectors: buffers are
-/// pre-filled with these cycling, and every byte past the decoded length must
-/// be untouched afterward. Period 37 (prime) so a mis-copied byte lands at an
-/// unrelated phase, where a power of two could mask an 8-byte-off copy.
-const sentinel_base: u8 = 0xa0;
-const sentinel_len: usize = 37;
 
 /// Bytes past the decoded length checked on every decode: an out-of-bounds
 /// write (a 16-byte SIMD store, a 64-byte copy chunk) lands in this region.
@@ -66,18 +61,6 @@ const framing_max: usize = 32 * 1024;
 /// itself uses (`snappy.scratch_len`).
 const scratch_max: usize = Writer.scratch_len;
 
-/// The sentinel cycle, materialized once so fills are chunked copies.
-const sentinel_pattern: [sentinel_len]u8 = blk: {
-    var pattern: [sentinel_len]u8 = undefined;
-    for (&pattern, 0..) |*b, i| b.* = sentinel_base + @as(u8, @intCast(i));
-    break :blk pattern;
-};
-
-/// The sentinel byte that must sit at absolute index `i`.
-fn sentinelAt(i: usize) u8 {
-    return sentinel_base + @as(u8, @intCast(i % sentinel_len));
-}
-
 /// A Smith-chosen value in `[at_least, at_most]`. `Smith.valueRangeAtMost`
 /// rejects `usize` (no fixed bitsize), so bounded lengths go through a `u32`
 /// and widen here; every call site is inside a per-iteration cap.
@@ -85,23 +68,6 @@ fn rangeAtMost(smith: *Smith, at_least: usize, at_most: usize) usize {
     assert(at_least <= at_most);
     assert(at_most <= std.math.maxInt(u32));
     return smith.valueRangeAtMost(u32, @intCast(at_least), @intCast(at_most));
-}
-
-/// Pre-fill `buf` with the cycling sentinel, from index 0: the phase is the
-/// absolute buffer index, so a partial fill must start there.
-fn fillSentinels(buf: []u8) void {
-    var i: usize = 0;
-    while (i + sentinel_len <= buf.len) : (i += sentinel_len) {
-        fastmem.copy(u8, buf[i..][0..sentinel_len], &sentinel_pattern);
-    }
-    fastmem.copy(u8, buf[i..], sentinel_pattern[0 .. buf.len - i]);
-}
-
-/// Every byte of the filled region `buf[0..filled]` from `from` on must still
-/// hold its sentinel: a decode wrote past the length it was allowed.
-fn checkSentinels(buf: []const u8, from: usize, filled: usize) !void {
-    assert(from <= filled);
-    for (buf[from..filled], from..) |x, i| try testing.expectEqual(sentinelAt(i), x);
 }
 
 /// How many `stream` calls a stream of `len` bytes may take: every call
@@ -142,11 +108,11 @@ fn blockRoundTrip(bytes: []const u8) !void {
     try testing.expectEqual(bytes.len, try decode.decompressedBlockLength(compressed[0..c_len]));
 
     var window: [block_max + guard_len]u8 = undefined;
-    fillSentinels(window[0 .. bytes.len + guard_len]);
+    sentinel.fill(window[0 .. bytes.len + guard_len]);
     const n = try decode.decompressBlock(compressed[0..c_len], window[0..bytes.len]);
     try testing.expectEqual(bytes.len, n);
     try testing.expectEqualSlices(u8, bytes, window[0..n]);
-    try checkSentinels(&window, bytes.len, bytes.len + guard_len);
+    try sentinel.expect(window[0 .. bytes.len + guard_len], bytes.len);
 }
 
 /// One block-decode seed in `std.testing.Smith`'s serialized form: the
@@ -216,7 +182,7 @@ fn fuzzBlockDecode(_: void, smith: *Smith) anyerror!void {
         rangeAtMost(smith, 0, declared_cap);
 
     var window: [decode_window_len + guard_len]u8 = undefined;
-    fillSentinels(window[0 .. target_len + guard_len]);
+    sentinel.fill(window[0 .. target_len + guard_len]);
 
     const target = window[0..target_len];
     const result = decode.decompressBlock(source, target);
@@ -235,7 +201,7 @@ fn fuzzBlockDecode(_: void, smith: *Smith) anyerror!void {
     }
 
     // Overrun: pass or fail, nothing at or past the target's length moved.
-    try checkSentinels(&window, target_len, target_len + guard_len);
+    try sentinel.expect(window[0 .. target_len + guard_len], target_len);
 }
 
 test "snappy fuzz: block decode" {
