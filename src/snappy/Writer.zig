@@ -22,6 +22,7 @@ const fastmem = @import("fastmem");
 
 const common = @import("common.zig");
 const readInt = common.readInt;
+const writeInt = common.writeInt;
 const encode = @import("encode.zig");
 
 /// The caller-provided uncompressed accumulation buffer: one full block.
@@ -73,12 +74,8 @@ fn emitBlock(w: *Writer) Io.Writer.Error!void {
         // `scratch` is sized to the exact worst case for any block.
         error.BufferTooSmall => unreachable,
     };
-    const prefix: [4]u8 = .{
-        @truncate(n),
-        @truncate(n >> 8),
-        @truncate(n >> 16),
-        @truncate(n >> 24),
-    };
+    var prefix: [4]u8 = undefined;
+    writeInt(u32, &prefix, @intCast(n));
     try w.output.writeAll(&prefix);
     try w.output.writeAll(scratch[0..n]);
     w.writer.end = 0;
