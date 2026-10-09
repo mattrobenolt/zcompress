@@ -63,11 +63,9 @@ buffer: *Buffer,
 /// The match-finder table, persistent across the stream's blocks
 /// (`encode.FinderTable`): entries are absolute stream positions, so a block
 /// pays a strided priming pass over its history, never a 128-KiB re-zero.
-/// Zeroed lazily on the first compressed block — a stored-only stream never
-/// pays for it at all.
-table: encode.FinderTable = undefined,
-/// Whether `table` has been zeroed this stream.
-table_ready: bool = false,
+/// Absent until the first compressed block — a stored-only stream never pays
+/// for it at all.
+table: ?encode.FinderTable = null,
 /// The absolute stream position of `buffer[0]` (wrapping u32, matching the
 /// table entries): `compact` advances it by the bytes it drops from the
 /// window's front.
@@ -149,16 +147,17 @@ fn emitBlock(w: *Writer, emit_len: usize) Io.Writer.Error!void {
     if (w.options.level == .@"0") {
         encode.emitStoredBlock(&bw, w.buffer[w.block_start..block_end]) catch unreachable;
     } else {
-        if (!w.table_ready) {
-            fastmem.set(u32, &w.table, 0);
-            w.table_ready = true;
+        if (w.table == null) {
+            var t: encode.FinderTable = undefined;
+            fastmem.set(u32, &t, 0);
+            w.table = t;
         }
         encode.compressBlockStream(
             w.buffer[0..block_end],
             w.block_start,
             block_end,
             &bw,
-            &w.table,
+            &w.table.?,
             w.window_base,
         ) catch unreachable;
     }
