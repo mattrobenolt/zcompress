@@ -156,7 +156,11 @@ fn encodeBlock(source: []const u8, target: []u8) error{BufferTooSmall}!usize {
     // input_margin, so the 8-byte fast paths below stay in bounds.
     assert(source.len >= input_margin);
 
-    var table: [table_size]u16 = @splat(0);
+    // Zero the table with fastmem: `@splat` lowers to compiler_rt.memset,
+    // which is a scalar 4-byte loop on aarch64 (~5 us for 32 KiB — a large
+    // share of a ~7-15 us block); fastmem.set is the vectorized kernel.
+    var table: [table_size]u16 = undefined;
+    fastmem.set(u16, &table, 0);
 
     // Stop match-finding this far from the end so the 8-byte literal/copy fast
     // paths stay in bounds.
