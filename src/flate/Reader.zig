@@ -1024,3 +1024,20 @@ test "Reader: a corrupt stream fails closed and stays failed" {
         try testing.expectError(error.ReadFailed, r.reader.stream(&sink.writer, .unlimited));
     }
 }
+
+/// Stream everything from `r` through one flate `Reader` into `w`,
+/// returning the decoded bytes served. Consumes `r` exactly through the
+/// stream's end (the final partial byte included) — bytes after the stream
+/// are left unconsumed. The reader and its window live on this stack frame;
+/// zero allocation.
+pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamError!usize {
+    var n: usize = 0;
+    var buf: Buffer = undefined;
+    var rr: Reader = .init(r, &buf);
+    while (true) {
+        n += rr.reader.stream(w, .unlimited) catch |err| switch (err) {
+            error.EndOfStream => return n,
+            else => return @errorCast(err),
+        };
+    }
+}

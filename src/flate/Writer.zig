@@ -614,3 +614,22 @@ fn makeShape(gpa: std.mem.Allocator, shape: Shape, len: usize) ![]u8 {
     }
     return buf;
 }
+
+/// Stream everything from `r` through one flate `Writer` into `w`,
+/// returning the bytes consumed and encoded. Consumes `r` exactly through
+/// its end, then finishes the stream (the `03 00` ending + flush). The
+/// writer and its window live on this stack frame; zero allocation.
+pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamError!usize {
+    var n: usize = 0;
+    var buf: Buffer = undefined;
+    var ww: Writer = .init(w, &buf);
+    while (true) {
+        n += r.stream(&ww.writer, .unlimited) catch |err| switch (err) {
+            error.EndOfStream => {
+                try ww.finish();
+                return n;
+            },
+            else => return @errorCast(err),
+        };
+    }
+}

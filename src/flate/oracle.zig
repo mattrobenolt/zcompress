@@ -56,7 +56,7 @@ pub fn main(init: std.process.Init) !u8 {
         const source = try file_reader.interface.allocRemaining(arena, .limited(max_stream_len));
         const target = try arena.alloc(u8, cap);
 
-        const decoded_len = flate.decompress(source, target) catch |err| {
+        const decoded_len = flate.decode.decompress(source, target) catch |err| {
             print("flate-oracle: {s}\n", .{@errorName(err)});
             return 1;
         };
@@ -70,9 +70,9 @@ pub fn main(init: std.process.Init) !u8 {
             return 1;
         }
         const source = try file_reader.interface.allocRemaining(arena, .limited(max_input_len));
-        const target = try arena.alloc(u8, flate.maxCompressedLength(source.len));
+        const target = try arena.alloc(u8, flate.encode.maxCompressedLength(source.len));
 
-        const encoded_len = flate.compress(source, target) catch |err| {
+        const encoded_len = flate.encode.compress(source, target) catch |err| {
             print("flate-oracle: {s}\n", .{@errorName(err)});
             return 1;
         };
