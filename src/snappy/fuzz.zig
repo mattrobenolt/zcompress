@@ -29,6 +29,7 @@ const Io = std.Io;
 const assert = std.debug.assert;
 const testing = std.testing;
 const Smith = testing.Smith;
+const math = std.math;
 
 const fastmem = @import("fastmem");
 
@@ -37,8 +38,12 @@ const sentinel = internal.sentinel;
 const common = @import("common.zig");
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
+const block_max: usize = encode.max_block_size;
 const Reader = @import("Reader.zig");
 const Writer = @import("Writer.zig");
+/// The worst-case compressed size of one block — the stack scratch `Writer`
+/// itself uses (`snappy.scratch_len`).
+const scratch_max: usize = Writer.scratch_len;
 
 /// Bytes past the decoded length checked on every decode: an out-of-bounds
 /// write (a 16-byte SIMD store, a 64-byte copy chunk) lands in this region.
@@ -53,20 +58,15 @@ const decode_window_len: usize = 96 * 1024;
 /// source (a 5-byte copy-4 tag yields 64 bytes), and a stream is block-framed,
 /// so these cover every path without unbounded work.
 const source_max: usize = 32 * 1024;
-const block_max: usize = encode.max_block_size;
 const stream_max: usize = 256 * 1024;
 const framing_max: usize = 32 * 1024;
-
-/// The worst-case compressed size of one block — the stack scratch `Writer`
-/// itself uses (`snappy.scratch_len`).
-const scratch_max: usize = Writer.scratch_len;
 
 /// A Smith-chosen value in `[at_least, at_most]`. `Smith.valueRangeAtMost`
 /// rejects `usize` (no fixed bitsize), so bounded lengths go through a `u32`
 /// and widen here; every call site is inside a per-iteration cap.
 fn rangeAtMost(smith: *Smith, at_least: usize, at_most: usize) usize {
     assert(at_least <= at_most);
-    assert(at_most <= std.math.maxInt(u32));
+    assert(at_most <= math.maxInt(u32));
     return smith.valueRangeAtMost(u32, @intCast(at_least), @intCast(at_most));
 }
 
@@ -450,7 +450,7 @@ fn mutateStream(smith: *Smith, buf: []u8, len: *usize) !void {
                 const value: u32 = switch (smith.valueRangeAtMost(u8, 0, 3)) {
                     0 => 0,
                     1 => 1,
-                    2 => std.math.maxInt(u32),
+                    2 => math.maxInt(u32),
                     else => smith.value(u32),
                 };
                 common.writeInt(u32, buf[at..][0..4], value);

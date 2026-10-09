@@ -27,6 +27,7 @@ const mem = std.mem;
 const assert = std.debug.assert;
 const testing = std.testing;
 const DefaultPrng = std.Random.DefaultPrng;
+const print = std.debug.print;
 
 const fastmem = @import("fastmem");
 
@@ -545,7 +546,7 @@ test "Reader: multi-block inputs round-trip" {
         const source = try makeSource(gpa, len);
         defer gpa.free(source);
         roundTrip(source) catch |err| {
-            std.debug.print("FAIL: len {d}\n", .{len});
+            print("FAIL: len {d}\n", .{len});
             return err;
         };
     }
@@ -574,7 +575,7 @@ test "Reader: golden golang/go vectors through the streaming reader" {
                 var fixed_in: Io.Reader = .fixed(tc.source);
                 var r: Reader = .init(&fixed_in, &rbuf);
                 const n = decodeInto(&r.reader, target) catch |err| {
-                    std.debug.print("\nFAIL ({s}): {s}\n", .{ tc.desc, @errorName(err) });
+                    print("\nFAIL ({s}): {s}\n", .{ tc.desc, @errorName(err) });
                     return err;
                 };
                 try testing.expectEqualSlices(u8, want, target[0..n]);
@@ -596,7 +597,7 @@ test "Reader: golden golang/go vectors through the streaming reader" {
                 switch (tc.expect) {
                     .fail_with => |want_err| {
                         if (r.err.? != want_err) {
-                            std.debug.print("\nFAIL ({s}): {s}, want {s}\n", .{
+                            print("\nFAIL ({s}): {s}, want {s}\n", .{
                                 tc.desc, @errorName(r.err.?), @errorName(want_err),
                             });
                             return error.TestUnexpectedResult;
@@ -671,7 +672,7 @@ test "Reader: golang/go huffman-* fixtures decode through the stream" {
         var fixed_in2: Io.Reader = .fixed(completed);
         var r2: Reader = .init(&fixed_in2, &rbuf2);
         const n = decodeInto(&r2.reader, target) catch |err| {
-            std.debug.print("\nFAIL: {s}: {s}\n", .{ fixture.name, @errorName(err) });
+            print("\nFAIL: {s}: {s}\n", .{ fixture.name, @errorName(err) });
             return err;
         };
         try testing.expectEqual(fixture.input.len, n);

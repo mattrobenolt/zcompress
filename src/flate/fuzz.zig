@@ -42,6 +42,8 @@ const Io = std.Io;
 const assert = std.debug.assert;
 const testing = std.testing;
 const Smith = testing.Smith;
+const math = std.math;
+const mem = std.mem;
 
 const fastmem = @import("fastmem");
 
@@ -131,7 +133,7 @@ fn pump(r: *Io.Reader, w: *Io.Writer, limit: usize) !void {
 /// consumes, so hand-built seeds can pin the values the target reads.
 fn u64Le(comptime value: u64) [8]u8 {
     var out: [8]u8 = undefined;
-    std.mem.writeInt(u64, &out, value, .little);
+    mem.writeInt(u64, &out, value, .little);
     return out;
 }
 
@@ -140,7 +142,7 @@ fn u64Le(comptime value: u64) [8]u8 {
 /// full 64-KiB window shape (3).
 fn decodeSeed(comptime block: []const u8) [4 + block.len + 8]u8 {
     var seed: [4 + block.len + 8]u8 = undefined;
-    std.mem.writeInt(u32, seed[0..4], @intCast(block.len), .little);
+    mem.writeInt(u32, seed[0..4], @intCast(block.len), .little);
     for (block, 0..) |b, i| seed[4 + i] = b;
     fastmem.set(u8, seed[4 + block.len ..], 0);
     seed[4 + block.len] = 3;
@@ -153,8 +155,8 @@ fn decodeSeed(comptime block: []const u8) [4 + block.len + 8]u8 {
 /// stream under test.
 fn streamSeed(comptime stream: []const u8) [8 + 4 + stream.len]u8 {
     var seed: [8 + 4 + stream.len]u8 = undefined;
-    std.mem.writeInt(u64, seed[0..8], 1, .little);
-    std.mem.writeInt(u32, seed[8..12], @intCast(stream.len), .little);
+    mem.writeInt(u64, seed[0..8], 1, .little);
+    mem.writeInt(u32, seed[8..12], @intCast(stream.len), .little);
     for (stream, 0..) |b, i| seed[12 + i] = b;
     return seed;
 }
@@ -165,8 +167,8 @@ fn streamSeed(comptime stream: []const u8) [8 + 4 + stream.len]u8 {
 fn sliceSeed(comptime level: u64, comptime bytes: []const u8) [12 + bytes.len]u8 {
     @setEvalBranchQuota(10_000);
     var seed: [12 + bytes.len]u8 = undefined;
-    std.mem.writeInt(u64, seed[0..8], level, .little);
-    std.mem.writeInt(u32, seed[8..12], @intCast(bytes.len), .little);
+    mem.writeInt(u64, seed[0..8], level, .little);
+    mem.writeInt(u32, seed[8..12], @intCast(bytes.len), .little);
     for (bytes, 0..) |b, i| seed[12 + i] = b;
     return seed;
 }
@@ -363,9 +365,9 @@ fn shapeSeed(
     comptime content: []const u8,
 ) [24 + content.len]u8 {
     var seed: [24 + content.len]u8 = undefined;
-    std.mem.writeInt(u64, seed[0..8], level, .little);
-    std.mem.writeInt(u64, seed[8..16], @intFromEnum(shape), .little);
-    std.mem.writeInt(u64, seed[16..24], len, .little);
+    mem.writeInt(u64, seed[0..8], level, .little);
+    mem.writeInt(u64, seed[8..16], @intFromEnum(shape), .little);
+    mem.writeInt(u64, seed[16..24], len, .little);
     for (content, 0..) |b, i| seed[24 + i] = b;
     return seed;
 }
@@ -775,7 +777,7 @@ fn mutateStream(smith: *Smith, buf: []u8, len: *usize) void {
                 const value: u16 = switch (rangeAtMost(smith, 0, 3)) {
                     0 => 0,
                     1 => 1,
-                    2 => std.math.maxInt(u16),
+                    2 => math.maxInt(u16),
                     else => smith.value(u16),
                 };
                 writeU16Le(buf, at, value);

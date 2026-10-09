@@ -39,6 +39,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const testing = std.testing;
 const mem = std.mem;
+const print = std.debug.print;
+const math = std.math;
 const DefaultPrng = std.Random.DefaultPrng;
 
 const fastmem = @import("fastmem");
@@ -930,7 +932,7 @@ test "matchCandidate: the position edge cases of the absolute-entry arithmetic" 
     // A wrapped-around entry: distance 16 lands in-window.
     try testing.expectEqual(
         @as(?usize, s_index - 16),
-        matchCandidate(src, s_index, 5, std.math.maxInt(u32) - 10, e, false),
+        matchCandidate(src, s_index, 5, math.maxInt(u32) - 10, e, false),
     );
     // An entry ahead of `s` (wraps to a huge distance): rejected.
     try testing.expectEqual(
@@ -1025,7 +1027,7 @@ test "compress: round trips through our decoder (shapes)" {
             const input = try makeShape(allocator, shape, len);
             defer allocator.free(input);
             roundTrip(input) catch |err| {
-                std.debug.print("FAIL: shape {s} len {d}\n", .{ @tagName(shape), len });
+                print("FAIL: shape {s} len {d}\n", .{ @tagName(shape), len });
                 return err;
             };
         }
@@ -1045,7 +1047,7 @@ test "compress: round trips across block boundaries" {
             const input = try makeShape(allocator, shape, len);
             defer allocator.free(input);
             roundTrip(input) catch |err| {
-                std.debug.print("FAIL: shape {s} len {d}\n", .{ @tagName(shape), len });
+                print("FAIL: shape {s} len {d}\n", .{ @tagName(shape), len });
                 return err;
             };
         }
@@ -1061,7 +1063,7 @@ test "compress: many blocks round trip (1 MiB)" {
         const input = try makeShape(allocator, shape, 1 << 20);
         defer allocator.free(input);
         roundTrip(input) catch |err| {
-            std.debug.print("FAIL: shape {s} len 1 MiB\n", .{@tagName(shape)});
+            print("FAIL: shape {s} len 1 MiB\n", .{@tagName(shape)});
             return err;
         };
     }
@@ -1086,7 +1088,7 @@ test "compress: maxCompressedLength bounds every emission" {
             const comp = try allocator.alloc(u8, bound);
             defer allocator.free(comp);
             const clen = compress(input, comp, .{}) catch |err| {
-                std.debug.print(
+                print(
                     "FAIL: {s} len {d}: {s}\n",
                     .{ @tagName(shape), len, @errorName(err) },
                 );
@@ -1146,7 +1148,7 @@ test "compress: golang/go deflateTests inputs round trip" {
     // form).
     for (golden.deflate_cases) |tc| {
         roundTrip(tc.want) catch |err| {
-            std.debug.print("FAIL: deflateTests input len {d}\n", .{tc.want.len});
+            print("FAIL: deflateTests input len {d}\n", .{tc.want.len});
             return err;
         };
     }
@@ -1158,7 +1160,7 @@ test "compress: golang/go testdata huffman-* inputs round trip" {
     // random tails, and the degenerate 64-KiB single-byte runs.
     for (golden.huffman_fixtures) |fixture| {
         roundTrip(fixture.input) catch |err| {
-            std.debug.print("FAIL: {s}\n", .{fixture.name});
+            print("FAIL: {s}\n", .{fixture.name});
             return err;
         };
     }
@@ -1195,7 +1197,7 @@ test "compress: RFC 1951 and flate-notes micro-example outputs round trip" {
     // notes' two streams.
     for (golden.micro_cases) |tc| {
         roundTrip(tc.want) catch |err| {
-            std.debug.print("FAIL: {s}\n", .{tc.desc});
+            print("FAIL: {s}\n", .{tc.desc});
             return err;
         };
     }
@@ -1276,7 +1278,7 @@ test "emit: flate-notes §3.2 stream 2 tokens pack the distance extra bits LSB-f
     try w.writeBits(1, 1); // BFINAL, matching the notes' stream
     try w.writeBits(1, 2); // BTYPE = 01, fixed
     var payload: u64 = 0;
-    const limit: u64 = std.math.maxInt(u64);
+    const limit: u64 = math.maxInt(u64);
     const run = [_]u8{'A'} ** 70;
     try testing.expect(try emitLiterals(&run, &w, &payload, limit));
     try testing.expect(try emitMatch(&w, 67, 3, &payload, limit));

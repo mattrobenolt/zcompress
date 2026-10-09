@@ -27,6 +27,8 @@ const Io = std.Io;
 const assert = std.debug.assert;
 const testing = std.testing;
 const DefaultPrng = std.Random.DefaultPrng;
+const math = std.math;
+const print = std.debug.print;
 
 const fastmem = @import("fastmem");
 
@@ -337,7 +339,7 @@ test "Writer: round trips across block boundaries" {
             const source = try makeShape(gpa, shape, len);
             defer gpa.free(source);
             roundTrip(source) catch |err| {
-                std.debug.print("FAIL: {s} len {d}\n", .{ @tagName(shape), len });
+                print("FAIL: {s} len {d}\n", .{ @tagName(shape), len });
                 return err;
             };
         }
@@ -477,12 +479,12 @@ test "Writer: a stream crossing the 4-GiB window-base wrap round-trips" {
     // zero-initialized slot at base X aliases differently than at base 0.
     const gpa = testing.allocator;
     const bases = [_]u32{
-        std.math.maxInt(u32),
-        std.math.maxInt(u32) - 1,
-        std.math.maxInt(u32) - history_len,
-        std.math.maxInt(u32) - max_block_size,
-        std.math.maxInt(u32) - 200_000,
-        std.math.maxInt(u32) - 400_000,
+        math.maxInt(u32),
+        math.maxInt(u32) - 1,
+        math.maxInt(u32) - history_len,
+        math.maxInt(u32) - max_block_size,
+        math.maxInt(u32) - 200_000,
+        math.maxInt(u32) - 400_000,
         0x8000_0000,
     };
     for (bases) |base| {
@@ -683,19 +685,19 @@ test "Writer: golden decoded outputs encode to streams the decoder verifies" {
             else => continue, // Reject cases have no output.
         };
         roundTrip(want) catch |err| {
-            std.debug.print("\nFAIL: {s}\n", .{tc.desc});
+            print("\nFAIL: {s}\n", .{tc.desc});
             return err;
         };
     }
     for (golden.micro_cases) |tc| {
         roundTrip(tc.want) catch |err| {
-            std.debug.print("\nFAIL: {s}\n", .{tc.desc});
+            print("\nFAIL: {s}\n", .{tc.desc});
             return err;
         };
     }
     for (golden.deflate_cases) |tc| {
         roundTrip(tc.want) catch |err| {
-            std.debug.print("\nFAIL: deflateTests input len {d}\n", .{tc.want.len});
+            print("\nFAIL: deflateTests input len {d}\n", .{tc.want.len});
             return err;
         };
     }
