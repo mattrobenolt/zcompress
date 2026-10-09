@@ -39,6 +39,7 @@
               zigdoc
               just
               python3
+              uv
               goperf
               pv
             ];

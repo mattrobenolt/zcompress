@@ -13,10 +13,14 @@ test:
 fuzz LIMIT="10M":
     zig build test -Doptimize=ReleaseSafe -Dfuzz --fuzz={{ LIMIT }}
 
-# Lint Zig sources: ziglint over the .ziglint.zon paths + the format check
+# Lint Zig + Python: ziglint + zig fmt over the .ziglint.zon paths,
+# ruff + ty over the scripts (uv-managed tooling, no project files)
 lint:
     ziglint
     zig fmt --check src build.zig
+    uvx ruff check --line-length 100 scripts
+    uvx ruff format --check --line-length 100 scripts
+    uvx ty check scripts
 
 # Apply zig fmt
 fmt:
@@ -46,7 +50,7 @@ check-baseline:
 # implementation). Fixtures, generated shapes, and CLI streaming rows.
 flate-oracle:
     zig build flate-oracle-harness
-    python3 scripts/flate_oracle.py
+    uv run scripts/flate_oracle.py
 
 bench *ARGS:
     zig build bench -Doptimize=ReleaseFast -- {{ ARGS }}

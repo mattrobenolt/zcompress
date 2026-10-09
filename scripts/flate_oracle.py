@@ -10,7 +10,6 @@ flake.
 import os
 import random
 import subprocess
-import sys
 import tempfile
 import zlib
 from pathlib import Path
@@ -18,6 +17,8 @@ from pathlib import Path
 root = Path(__file__).resolve().parent.parent
 harness = root / "zig-out/bin/flate-oracle"
 testdata = root / "src/flate/testdata"
+
+
 # Raw-deflate shapes the oracle can emit. zlib has no level -2 (that is
 # Go's `flate.HuffmanOnly`); the huffman-only stream is the Z_HUFFMAN_ONLY
 # strategy here, which is the shape that exercises dynamic blocks.
@@ -25,6 +26,7 @@ def make_raw(level, strategy=zlib.Z_DEFAULT_STRATEGY):
     def compress(data):
         co = zlib.compressobj(level, zlib.DEFLATED, -15, zlib.DEF_MEM_LEVEL, strategy)
         return co.compress(data) + co.flush()
+
     return compress
 
 
@@ -43,10 +45,12 @@ def our_decompress(raw: bytes, cap: int) -> bytes:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(raw)
-        p = subprocess.run([str(harness), "decode", path, str(cap)], capture_output=True)
+        p = subprocess.run(
+            [str(harness), "decode", path, str(cap)], capture_output=True, check=False
+        )
         if p.returncode != 0:
             raise AssertionError(
-                "our decoder failed (%s): %s" % (p.returncode, p.stderr.decode().strip())
+                f"our decoder failed ({p.returncode}): {p.stderr.decode().strip()}"
             )
         return p.stdout
     finally:
@@ -58,7 +62,9 @@ def our_decompress_fails(raw: bytes, cap: int) -> bool:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(raw)
-        p = subprocess.run([str(harness), "decode", path, str(cap)], capture_output=True)
+        p = subprocess.run(
+            [str(harness), "decode", path, str(cap)], capture_output=True, check=False
+        )
         return p.returncode != 0
     finally:
         os.unlink(path)
@@ -71,10 +77,10 @@ def our_compress(data: bytes) -> bytes:
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        p = subprocess.run([str(harness), "encode", path], capture_output=True)
+        p = subprocess.run([str(harness), "encode", path], capture_output=True, check=False)
         if p.returncode != 0:
             raise AssertionError(
-                "our encoder failed (%s): %s" % (p.returncode, p.stderr.decode().strip())
+                f"our encoder failed ({p.returncode}): {p.stderr.decode().strip()}"
             )
         return p.stdout
     finally:
@@ -92,23 +98,21 @@ def check(desc: str, data: bytes, cap: int) -> None:
     oracle itself round-trips the same bytes."""
     for shape, compress in shapes:
         raw = compress(data)
-        assert python_decompress(raw) == data, "oracle round trip (%s, %s)" % (desc, shape)
+        assert python_decompress(raw) == data, f"oracle round trip ({desc}, {shape})"
         got = our_decompress(raw, cap)
-        assert got == data, "our decode (%s, %s): %d bytes, want %d" % (
-            desc, shape, len(got), len(data))
+        assert got == data, f"our decode ({desc}, {shape}): {len(got)} bytes, want {len(data)}"
 
     # Our encode -> the oracle's decode. This is the primary gate for the
     # bit-packing rules (`§3.1.1`): a `writeBits`/`writeCode` mix-up
     # round-trips against our own decoder and fails here.
     ours = our_compress(data)
     got = python_decompress(ours)
-    assert got == data, "our encode (%s): oracle decoded %d bytes, want %d" % (
-        desc, len(got), len(data))
+    assert got == data, f"our encode ({desc}): oracle decoded {len(got)} bytes, want {len(data)}"
     # README, "Divergences" T4 — the stream ends with the empty fixed block
     # `03 00` (byte-aligned) or that pattern shifted into the last three
     # bytes; either way the final byte is zero and the bit before it is the
     # ending's BTYPE bit.
-    assert ours[-1] == 0x00, "our encode (%s): final byte %#x" % (desc, ours[-1])
+    assert ours[-1] == 0x00, f"our encode ({desc}): final byte {ours[-1]:#x}"
 
 
 # 1. The committed golang/go pairs: `.golden` is a single non-final block,
@@ -119,15 +123,15 @@ for golden in sorted(testdata.glob("*.golden")):
     inp = golden.parent / (golden.name[: -len(".golden")] + ".in")
     data = inp.read_bytes()
     raw = golden.read_bytes()
-    assert python_decompress(raw) == data, "oracle decode (%s)" % golden.name
-    assert our_decompress_fails(raw, len(data)), "%s: non-final block accepted" % golden.name
+    assert python_decompress(raw) == data, f"oracle decode ({golden.name})"
+    assert our_decompress_fails(raw, len(data)), f"{golden.name}: non-final block accepted"
     completed = bytearray(raw)
     completed[0] |= 1  # BFINAL on the fixture's single block header
-    assert python_decompress(bytes(completed)) == data, "oracle decode (%s, final)" % golden.name
+    assert python_decompress(bytes(completed)) == data, f"oracle decode ({golden.name}, final)"
     got = our_decompress(bytes(completed), len(data))
-    assert got == data, "our decode (%s): %d bytes, want %d" % (golden.name, len(got), len(data))
+    assert got == data, f"our decode ({golden.name}): {len(got)} bytes, want {len(data)}"
     pairs += 1
-assert pairs == 9, "expected 9 testdata pairs, found %d" % pairs
+assert pairs == 9, f"expected 9 testdata pairs, found {pairs}"
 
 # 2. The oracle's own streams over the same inputs, every level, and our
 #    encoder's streams for the same bytes (both directions).
@@ -149,19 +153,24 @@ for desc, data in (
 ):
     check(desc, data, len(data) + 1)
 
+
 # 4. The streaming row: the example CLI pumps through flate.Reader and
 #    flate.Writer, so this drives the streaming layer end to end through
 #    the file CLI — its own encode -> decode round trip, and the oracle's
 #    decode of the streaming encoder's stream, the same both-directions
 #    rule as the one-shot lane above.
 def example(args, data):
-    p = subprocess.run(["zig", "build", "example-flate", "--"] + args,
-                       cwd=root, input=data, capture_output=True)
+    p = subprocess.run(
+        ["zig", "build", "example-flate", "--"] + args,
+        cwd=root,
+        input=data,
+        capture_output=True,
+        check=False,
+    )
     if p.returncode != 0:
-        raise AssertionError(
-            "example-flate %s failed: %s" % (args, p.stderr.decode().strip())
-        )
+        raise AssertionError(f"example-flate {args} failed: {p.stderr.decode().strip()}")
     return p.stdout
+
 
 streaming = (
     ("streaming multi-block text", long_text),
@@ -169,11 +178,13 @@ streaming = (
 )
 for desc, data in streaming:
     raw = example(["encode", "-"], data)
-    assert python_decompress(raw) == data, "example encode -> oracle decode (%s)" % desc
+    assert python_decompress(raw) == data, f"example encode -> oracle decode ({desc})"
     back = example(["decode", "-"], raw)
-    assert back == data, "example round trip (%s): %d bytes, want %d" % (
-        desc, len(back), len(data))
+    assert back == data, f"example round trip ({desc}): {len(back)} bytes, want {len(data)}"
 
-print("flate-oracle: %d fixture pairs + %d inputs x %d raw-deflate shapes, both directions, "
-      "+ %d streaming rows through the CLI: OK"
-      % (pairs, len(list(testdata.glob("*.in"))) + 4, len(shapes), len(streaming)))
+fixture_inputs = len(list(testdata.glob("*.in"))) + 4
+print(
+    "flate-oracle: "
+    f"{pairs} fixture pairs + {fixture_inputs} inputs x {len(shapes)} raw-deflate shapes, "
+    f"both directions, + {len(streaming)} streaming rows through the CLI: OK"
+)
