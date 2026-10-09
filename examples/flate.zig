@@ -29,17 +29,12 @@ pub fn main(init: std.process.Init) !u8 {
 
 fn encode(arena: Allocator, in: *Io.Reader, out: *Io.Writer) !void {
     _ = arena;
-    var buf: flate.Writer.Buffer = undefined;
-    var w: flate.Writer = .init(out, &buf);
-    _ = try in.streamRemaining(&w.writer);
-    try w.finish();
+    _ = try flate.Writer.streamAll(in, out);
 }
 
 fn decode(arena: Allocator, in: *Io.Reader, out: *Io.Writer) !void {
     _ = arena;
-    var buf: flate.Reader.Buffer = undefined;
-    var r: flate.Reader = .init(in, &buf);
-    _ = try r.reader.streamRemaining(out);
+    _ = try flate.Reader.streamAll(in, out);
 }
 
 test "example: streaming round-trip" {
