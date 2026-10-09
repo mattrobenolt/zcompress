@@ -113,9 +113,9 @@ Semantics:
 - The contiguous decoded-read cap is two blocks: a `peek` beyond it asserts.
 
 Files: `root.zig` (public surface), `encode.zig` (match-finder),
-`decode.zig` (SIMD decoder + golden vectors), `Writer.zig` + `Reader.zig`
-(streaming `Io` layer), `common.zig` (LEB128 varint), `bench.zig` (local
-benchmark).
+`decode.zig` (SIMD decoder), `golden.zig` (ported golden fixtures, shared by
+every layer's tests), `Writer.zig` + `Reader.zig` (streaming `Io` layer),
+`common.zig` (LEB128 varint), `bench.zig` (local benchmark).
 
 An example CLI (`examples/snappy.zig`, `zig build example-snappy -- encode
 README.md > out`) exercises the streaming surface end-to-end as a thin pump:
@@ -233,6 +233,12 @@ from [golang/snappy][golsnappy]'s `TestDecode`, `TestDecodeCopy4`, and
   overrun check. Hammers the SIMD copy path across every small offset/length
   pair, including overlapping RLE.
 - The `format_description.txt` hand examples and the spec's varint examples.
+
+The same vectors run through every layer: the block decoder directly
+(golden.zig), the framed stream through `snappy.Reader` (valid and corrupt),
+`snappy.Writer` output re-verified block-by-block through the golden-verified
+decoder, and full `Writer` -> `Reader` round trips on the golden outputs. The
+fixtures live in `golden.zig`, shared by all layers.
 
 Run everything with `zig build test` (the ztest plain-text runner).
 

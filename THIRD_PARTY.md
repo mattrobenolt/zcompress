@@ -10,7 +10,7 @@ and dependency with a license that is not ours.
   Snappy-Go reference encoder. The algorithm is ported, not the code.
   Attribution: Copyright klauspost/compress contributors,
   https://github.com/klauspost/compress (s2/encode_all.go).
-- `src/snappy/decode.zig` golden vectors: ported from golang/snappy
+- `src/snappy/golden.zig` golden fixtures: ported from golang/snappy
   (BSD-3-Clause) `TestDecode`, `TestDecodeCopy4`, and `TestDecodeLengthOffset`
   tables. Attribution: Copyright the Go Authors,
   https://github.com/golang/snappy (decode_test.go).

@@ -54,5 +54,6 @@ test {
     _ = decode;
     _ = Writer;
     _ = Reader;
+    _ = @import("golden.zig");
     std.testing.refAllDecls(@This());
 }

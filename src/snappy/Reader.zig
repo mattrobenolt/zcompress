@@ -23,6 +23,7 @@ const common = @import("common.zig");
 const readInt = common.readInt;
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
+const golden = @import("golden.zig");
 const Writer = @import("Writer.zig");
 
 /// The caller-provided buffer: two decoded blocks plus the compressed-block
@@ -197,6 +198,54 @@ test "Reader: random multi-block input round-trips" {
     var rng: DefaultPrng = .init(0xC0FFEE);
     for (&input) |*b| b.* = rng.random().int(u8);
     try roundTrip(&input);
+}
+
+test "Reader: golden golang/snappy vectors through the framed stream" {
+    // Every golden block (valid and corrupt), framed per the stream format,
+    // decoded through Reader: valid cases produce the golden output and end
+    // at a clean end of stream; corrupt cases fail closed and stay failed.
+    const gpa = testing.allocator;
+    for (golden.golden_decode_cases) |tc| {
+        var frame_buf: [128]u8 = undefined;
+        const frame = framedBlock(tc.source, &frame_buf);
+
+        var rbuf: Buffer = undefined;
+        var fixed_in: Io.Reader = .fixed(frame);
+        var r: Reader = .init(&fixed_in, &rbuf);
+        var plain: Io.Writer.Allocating = .init(gpa);
+        defer plain.deinit();
+
+        if (tc.want_err) {
+            try testing.expectError(error.ReadFailed, pump(&r.reader, &plain.writer));
+            var sink: Io.Writer.Discarding = .init(&.{});
+            try testing.expectError(error.ReadFailed, r.reader.stream(&sink.writer, .unlimited));
+            continue;
+        }
+        pump(&r.reader, &plain.writer) catch |err| {
+            std.debug.print("\nFAIL: {s}\n", .{tc.desc});
+            return err;
+        };
+        try testing.expectEqualSlices(u8, tc.want, plain.written());
+    }
+}
+
+test "Reader: golden outputs round-trip Writer -> Reader" {
+    for (golden.golden_decode_cases) |tc| {
+        if (tc.want_err) continue; // Corrupt sources have no output.
+        roundTrip(tc.want) catch |err| {
+            std.debug.print("\nFAIL: {s}\n", .{tc.desc});
+            return err;
+        };
+    }
+}
+
+/// Frame one raw block for a golden stream test: the `u32-le` length
+/// prefix plus the block. Asserts `buf` can hold the frame.
+fn framedBlock(source: []const u8, buf: []u8) []u8 {
+    assert(source.len + 4 <= buf.len);
+    common.writeInt(u32, buf.ptr[0..4], @intCast(source.len));
+    fastmem.copy(u8, buf[4..][0..source.len], source);
+    return buf[0 .. 4 + source.len];
 }
 
 test "Reader: corrupt framing fails closed and stays failed" {

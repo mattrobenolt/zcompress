@@ -23,7 +23,9 @@ const fastmem = @import("fastmem");
 const common = @import("common.zig");
 const readInt = common.readInt;
 const writeInt = common.writeInt;
+const decode = @import("decode.zig");
 const encode = @import("encode.zig");
+const golden = @import("golden.zig");
 const Reader = @import("Reader.zig");
 
 /// The caller-provided uncompressed accumulation buffer: one full block.
@@ -218,6 +220,40 @@ test "Writer: writableSliceGreedy on a full buffer emits, never drops" {
     try testing.expect(plain.written()[0] == 'a');
     try testing.expect(plain.written()[encode.max_block_size] == 'b');
     try testing.expect(plain.written()[2 * encode.max_block_size] == 'c');
+}
+
+test "Writer: golden decoded outputs encode to streams the block decoder verifies" {
+    // Encode each golden `want` through Writer, then decode the framed stream
+    // with the block decoder (the golden-verified path), independent of
+    // Reader: the framing must parse and every block must reproduce its
+    // input bytes.
+    const gpa = testing.allocator;
+    var d_buf: [encode.max_block_size]u8 = undefined;
+    for (golden.golden_decode_cases) |tc| {
+        if (tc.want_err) continue; // Corrupt sources have no output.
+
+        var out: Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        var buf: Buffer = undefined;
+        var w: Writer = .init(&out.writer, &buf);
+        try w.writer.writeAll(tc.want);
+        try w.finish();
+
+        var plain: Io.Writer.Allocating = .init(gpa);
+        defer plain.deinit();
+        const stream = out.written();
+        var pos: usize = 0;
+        while (pos < stream.len) {
+            const block_len = readInt(u32, stream[pos..][0..4].ptr[0..4]);
+            pos += 4;
+            const block = stream[pos..][0..block_len];
+            pos += block_len;
+            const d_len = try decode.decompressedBlockLen(block);
+            const n = try decode.decompressBlock(block, d_buf[0..d_len]);
+            try plain.writer.writeAll(d_buf[0..n]);
+        }
+        try testing.expectEqualSlices(u8, tc.want, plain.written());
+    }
 }
 
 test "Writer: flush mid-stream emits the partial block" {

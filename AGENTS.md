@@ -11,7 +11,8 @@ it before you change a kernel or make a performance claim.
 - `src/snappy/`: raw-block snappy, the first codec, with fastmem wired into
   its copy paths. `encode.zig` ports the klauspost
   encoder algorithm (THIRD_PARTY.md); `decode.zig` is original, with golden
-  vectors from golang/snappy; `Writer.zig` + `Reader.zig` are the streaming
+  vectors in `golden.zig` (ported golang/snappy fixtures, shared by every
+layer's tests); `Writer.zig` + `Reader.zig` are the streaming
   `Io` layer (a compressing `Io.Writer` and a decompressing `Io.Reader` over
   the framed stream — see `src/snappy/README.md`, "Streaming"); `bench.zig`
   is the local benchmark.
