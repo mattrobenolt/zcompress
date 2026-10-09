@@ -38,6 +38,7 @@
               ziglint
               zigdoc
               just
+              python3
               goperf
               pv
             ];
