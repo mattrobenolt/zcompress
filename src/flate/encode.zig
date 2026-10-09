@@ -220,8 +220,11 @@ fn distanceSymbol(distance: usize) DistanceSymbol {
 }
 
 /// The bit writer (`§3.1.1`): bits fill a byte from bit 0 up, and a 9th bit
-/// spills into bit 0 of the next byte.
-const BitWriter = struct {
+/// spills into bit 0 of the next byte. `bits`/`bit_count` carry the stream's
+/// pending partial byte, which is what lets the streaming `Writer` emit one
+/// block at a time: a block's bits continue at the previous block's bit
+/// offset.
+pub const BitWriter = struct {
     target: []u8,
     /// Whole bytes written into `target`.
     pos: usize = 0,
@@ -293,7 +296,7 @@ const BitWriter = struct {
 
     /// Flush the final partial byte, zero-padded (README, "The stream
     /// format").
-    fn finish(self: *BitWriter) error{BufferTooSmall}!void {
+    pub fn finish(self: *BitWriter) error{BufferTooSmall}!void {
         if (self.bit_count == 0) return;
         if (self.pos == self.target.len) return error.BufferTooSmall;
         self.target[self.pos] = @truncate(self.bits);
@@ -566,12 +569,24 @@ fn encodeFixedBlock(
     return true;
 }
 
+/// `§3.2.3`, README "Divergences" T4 — the final empty fixed block every
+/// stream ends with: BFINAL=1, BTYPE=01, end-of-block (`03 00` at a byte
+/// boundary). One function, so the one-shot and streaming encoders cannot
+/// drift: no data block carries BFINAL, which is what makes a mid-stream
+/// `flush` safe.
+pub fn writeFinalEmptyBlock(w: *BitWriter) error{BufferTooSmall}!void {
+    try w.writeBits(1, 1);
+    try w.writeBits(1, 2);
+    try w.writeCode(fixed_literal_codes[256]);
+}
+
 /// Compress `source[block_start..block_end]` into `w`: fixed Huffman when its
 /// payload beats the stored form, stored otherwise (README, "Encoder").
 /// Matches may reach `history_len` bytes back into `source` itself — the
-/// one-shot path's history is the source — so a match crosses block boundaries
-/// exactly as the format allows (`§3.2.3`).
-fn compressBlock(
+/// one-shot path's history is the source, and the streaming Writer's is the
+/// retained tail of its window — so a match crosses block boundaries exactly
+/// as the format allows (`§3.2.3`).
+pub fn compressBlock(
     source: []const u8,
     block_start: usize,
     block_end: usize,
@@ -611,12 +626,7 @@ pub fn compress(source: []const u8, target: []u8) error{BufferTooSmall}!usize {
         block_start = block_end;
     }
 
-    // README, "Divergences" T4 — the stream ends with a final empty fixed
-    // block, `03 00`: BFINAL=1, BTYPE=01, EOB. No data block carries BFINAL,
-    // which is what makes a mid-stream flush safe.
-    try w.writeBits(1, 1);
-    try w.writeBits(1, 2);
-    try w.writeCode(fixed_literal_codes[256]);
+    try writeFinalEmptyBlock(&w);
     try w.finish();
 
     // The README's sizing contract, as a postcondition: the stored fallback
@@ -667,8 +677,9 @@ fn readBits(stream: []const u8, bit: usize, comptime count: u6) u64 {
 /// end-of-block — zero-padded to the byte boundary. The ending's start depends
 /// on the last data block's bit offset, so it is located from the stream's
 /// last set bit: that is the ending's BTYPE low bit, and everything after it
-/// (the end-of-block's seven zeros and the padding) is clear.
-fn expectFinalEmptyBlock(stream: []const u8) !void {
+/// (the end-of-block's seven zeros and the padding) is clear. Shared with the
+/// streaming `Writer`'s tests, whose streams must end the same way.
+pub fn expectFinalEmptyBlock(stream: []const u8) !void {
     const total_bits = stream.len * 8;
     var last_set: ?usize = null;
     var bit = total_bits;

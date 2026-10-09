@@ -56,6 +56,17 @@ pub const DecompressError = error{
     InvalidMatch,
 };
 
+/// The tree-construction failures — everything `build` reports (`§3.2.2`'s
+/// Kraft rule, `§3.2.7`'s header rules). Narrower than the full decode set so
+/// both bit sources can call it: the streaming `Reader`'s error set is the
+/// decode set minus `BufferTooSmall`.
+pub const TreeError = error{
+    OversubscribedHuffmanTree,
+    IncompleteHuffmanTree,
+    MissingEndOfBlockCode,
+    InvalidDynamicBlockHeader,
+};
+
 /// `§3.2.7` — the order the precode code lengths are transmitted in. The
 /// scrambled order keeps the common precode lengths early, so HCLEN can be
 /// small.
@@ -99,6 +110,12 @@ const max_peek_bits: u6 = 56;
 /// `error.Truncated`, so a truncated stream can never decode a symbol out of
 /// padding.
 const BitReader = struct {
+    /// The error set the slice-backed reader produces: the whole decode set.
+    /// Named `ErrorSet` (not `Error`) because the streaming `Reader`'s bit
+    /// source shadows it with a wider set, and Zig's file scope has no
+    /// `ErrorSet` to collide with.
+    pub const ErrorSet = DecompressError;
+
     source: []const u8,
     /// Next source byte not yet loaded into `bits`.
     next_byte: usize,
@@ -132,8 +149,9 @@ const BitReader = struct {
 
     /// The next `n` bits, LSB-of-value first, refilling first. Bits past the
     /// end of the input read as zero; the caller must `take` before trusting
-    /// them.
-    fn peek(self: *BitReader, n: u6) u64 {
+    /// them. Fallible only so the streaming `Reader`'s bit source — an input
+    /// `Io.Reader`, which can fail — shares this machinery with the slice.
+    fn peek(self: *BitReader, n: u6) DecompressError!u64 {
         assert(n <= max_peek_bits);
         self.refill();
         return self.bits & ((@as(u64, 1) << n) - 1);
@@ -142,7 +160,7 @@ const BitReader = struct {
     /// Consume `n` bits. `error.Truncated` when the input ends first.
     fn take(self: *BitReader, n: u6) DecompressError!u64 {
         if (self.availableBits() < n) return error.Truncated;
-        const value = self.peek(n);
+        const value = try self.peek(n);
         self.bits >>= n;
         self.bit_count -= n;
         self.bit_pos += n;
@@ -171,7 +189,7 @@ const BitReader = struct {
 };
 
 /// Decoder-table kinds: the alphabet decides which structural rules apply.
-const TreeKind = enum {
+pub const TreeKind = enum {
     /// Literal/length alphabet (0-285). Must be able to code 256 — without an
     /// end-of-block code no block could ever terminate (`§3.2.7`).
     literal_length,
@@ -192,7 +210,10 @@ const TreeKind = enum {
 /// marks a primary slot whose codes are all longer than `lookup_bits` (the
 /// chain head is in the same field), and `invalid` marks a slot no code
 /// matches — `error.InvalidCode`.
-fn HuffmanDecoder(
+/// Public because the streaming `Reader` (Reader.zig) builds the same tables
+/// and decodes through the same code: the two layers differ in where the bits
+/// come from and where the output goes, not in the tree machinery.
+pub fn HuffmanDecoder(
     comptime alphabet_size: usize,
     comptime max_bits: u5,
     comptime lookup_bits: u5,
@@ -221,7 +242,7 @@ fn HuffmanDecoder(
         /// order; 0 = "does not occur", `§3.2.7`). `error.Oversubscribed
         /// HuffmanTree` / `error.IncompleteHuffmanTree` /
         /// `error.MissingEndOfBlockCode` per the README's decided rules.
-        fn build(self: *Self, lens: []const u4) DecompressError!void {
+        pub fn build(self: *Self, lens: []const u4) TreeError!void {
             assert(lens.len <= alphabet_size);
             assert(kind != .literal_length or lens.len > 256);
             try checkLengths(kind, lens);
@@ -262,10 +283,13 @@ fn HuffmanDecoder(
 
         /// Decode one symbol: peek `max_bits`, resolve the code, consume its
         /// length. `error.InvalidCode` for a bit pattern no code matches.
-        fn decode(self: *const Self, br: *BitReader) DecompressError!u16 {
+        /// `br` is any bit source with `peek`/`take` and an `ErrorSet`: this
+        /// file's `BitReader` over a slice, or the streaming `Reader`'s over
+        /// its input (whose reads can fail).
+        pub fn decode(self: *const Self, br: anytype) @TypeOf(br.*).ErrorSet!u16 {
             // The primary table is indexed by the next `lookup_bits` bits,
             // which is exactly the code for codes no longer than that.
-            const peeked = br.peek(max_bits);
+            const peeked = try br.peek(max_bits);
             const entry = self.lookup[@intCast(peeked & lookup_mask)];
             if (entry == invalid) return error.InvalidCode;
             if ((entry & 0xF) != 0) {
@@ -300,7 +324,7 @@ fn wireBits(code: u16, len: u5) u16 {
 ///   - incomplete unless the only code is a single 1-bit code — zlib's
 ///     `inftrees.c` rule, Go's `huffmanDecoder.init`, std's `checkCompleteness`;
 ///   - an empty literal/length tree (no code for 256) or an empty precode tree.
-fn checkLengths(comptime kind: TreeKind, lens: []const u4) DecompressError!void {
+fn checkLengths(comptime kind: TreeKind, lens: []const u4) TreeError!void {
     var count: [16]u16 = @splat(0);
     var max: u4 = 0;
     for (lens) |len| {
@@ -325,9 +349,9 @@ fn checkLengths(comptime kind: TreeKind, lens: []const u4) DecompressError!void 
     if (kind == .literal_length and lens[256] == 0) return error.MissingEndOfBlockCode;
 }
 
-const LitDecoder = HuffmanDecoder(288, 15, 9, .literal_length);
-const DistDecoder = HuffmanDecoder(32, 15, 9, .distance);
-const PrecodeDecoder = HuffmanDecoder(19, 7, 7, .precode);
+pub const LitDecoder = HuffmanDecoder(288, 15, 9, .literal_length);
+pub const DistDecoder = HuffmanDecoder(32, 15, 9, .distance);
+pub const PrecodeDecoder = HuffmanDecoder(19, 7, 7, .precode);
 
 /// `§3.2.6` — the fixed literal/length code lengths. Values 286-287 "will
 /// never actually occur in the compressed data, but participate in the code
@@ -348,7 +372,7 @@ const fixed_distance_lens: [32]u4 = @splat(5);
 /// `§3.2.6` — the fixed tables, built once at compile time. Building the
 /// literal table with all 288 lengths is what makes it complete
 /// (152x2^-8 + 112x2^-9 + 24x2^-7 = 1).
-const fixed_literal: LitDecoder = blk: {
+pub const fixed_literal: LitDecoder = blk: {
     @setEvalBranchQuota(10_000);
     var decoder: LitDecoder = .{};
     decoder.build(&fixed_literal_lens) catch |err| @compileError(
@@ -357,7 +381,7 @@ const fixed_literal: LitDecoder = blk: {
     break :blk decoder;
 };
 
-const fixed_distance: DistDecoder = blk: {
+pub const fixed_distance: DistDecoder = blk: {
     @setEvalBranchQuota(10_000);
     var decoder: DistDecoder = .{};
     decoder.build(&fixed_distance_lens) catch |err| @compileError(
@@ -405,8 +429,9 @@ pub fn decompress(source: []const u8, target: []u8) DecompressError!usize {
 }
 
 /// `§3.2.3` — BTYPE 00 stored, 01 fixed-Huffman, 10 dynamic-Huffman, 11
-/// "reserved (error)".
-const BlockType = enum(u2) { stored = 0, fixed = 1, dynamic = 2, reserved = 3 };
+/// "reserved (error)". Shared with the streaming `Reader`, which dispatches on
+/// the same header bits.
+pub const BlockType = enum(u2) { stored = 0, fixed = 1, dynamic = 2, reserved = 3 };
 
 /// `§3.2.4` — a stored block: byte-aligned, LEN and NLEN (u16 LE, NLEN the
 /// one's complement of LEN), then LEN raw bytes.
@@ -474,7 +499,7 @@ fn decodeCompressedBlock(
 /// `§3.2.5` — length = base + extra, computed *unclamped* (README, "Divergences"
 /// T5): code 284 with extra bits 31 is 258, even though the table states 284's
 /// range as 227-257, because the whole reference lineage computes it that way.
-fn decodeLength(br: *BitReader, symbol: u16) DecompressError!usize {
+pub fn decodeLength(br: anytype, symbol: u16) @TypeOf(br.*).ErrorSet!usize {
     const index: usize = symbol - 257;
     const extra = length_extra[index];
     const bits: usize = if (extra == 0) 0 else @intCast(try br.take(extra));
@@ -482,7 +507,7 @@ fn decodeLength(br: *BitReader, symbol: u16) DecompressError!usize {
 }
 
 /// `§3.2.5` — distance = base + extra, unclamped; the result is 1-32768.
-fn decodeDistance(br: *BitReader, symbol: u16) DecompressError!usize {
+pub fn decodeDistance(br: anytype, symbol: u16) @TypeOf(br.*).ErrorSet!usize {
     const index: usize = symbol;
     const extra = distance_extra[index];
     const bits: usize = if (extra == 0) 0 else @intCast(try br.take(extra));
@@ -492,11 +517,11 @@ fn decodeDistance(br: *BitReader, symbol: u16) DecompressError!usize {
 /// `§3.2.7` — the dynamic header: HLIT, HDIST, HCLEN, the scrambled precode
 /// lengths, then HLIT+HDIST code lengths as one sequence that repeat codes may
 /// carry across the literal/distance boundary.
-fn readDynamicHeader(
-    br: *BitReader,
+pub fn readDynamicHeader(
+    br: anytype,
     literal: *LitDecoder,
     distance: *DistDecoder,
-) DecompressError!void {
+) @TypeOf(br.*).ErrorSet!void {
     const hlit: usize = @as(usize, @intCast(try br.take(5))) + 257;
     const hdist: usize = @as(usize, @intCast(try br.take(5))) + 1;
     const hclen: usize = @as(usize, @intCast(try br.take(4))) + 4;
@@ -553,7 +578,7 @@ fn readDynamicHeader(
 /// caller's guarantees. A match may overlap the bytes it is writing — the
 /// referenced string repeats — so the overlapping case replicates the
 /// `match_distance`-byte pattern.
-fn copyMatch(target: []u8, out_pos: usize, match_distance: usize, length: usize) void {
+pub fn copyMatch(target: []u8, out_pos: usize, match_distance: usize, length: usize) void {
     assert(match_distance > 0);
     assert(match_distance <= out_pos);
     assert(out_pos + length <= target.len);
@@ -614,8 +639,8 @@ test "bit reader: peek past the end reads zeros, take fails" {
     // Spec: rfc1951-deflate.txt §3.1.1 — a peek is not a read; only `take`
     // consumes, and a truncated stream must fail closed.
     var br: BitReader = .init(&[_]u8{0xFF});
-    try testing.expectEqual(@as(u64, 0xFF), br.peek(8));
-    try testing.expectEqual(@as(u64, 0xFF), br.peek(15)); // high bits read as zero
+    try testing.expectEqual(@as(u64, 0xFF), try br.peek(8));
+    try testing.expectEqual(@as(u64, 0xFF), try br.peek(15)); // high bits read as zero
     try testing.expectError(error.Truncated, br.take(9));
     try testing.expectEqual(@as(u64, 0xFF), try br.take(8));
     try testing.expectError(error.Truncated, br.take(1));

@@ -84,6 +84,29 @@ pub fn build(b: *Build) void {
     );
     snappy_example_step.dependOn(&run_snappy_example.step);
 
+    const flate_example_mod = b.createModule(.{
+        .root_source_file = b.path("examples/flate.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "cli", .module = cli_mod },
+            .{ .name = "flate", .module = flate_mod },
+        },
+    });
+    const flate_example = b.addExecutable(.{
+        .name = "flate",
+        .root_module = flate_example_mod,
+    });
+    const run_flate_example = b.addRunArtifact(flate_example);
+    // The CLI writes to stdout: always run, never a cached result.
+    run_flate_example.has_side_effects = true;
+    if (b.args) |args| run_flate_example.addArgs(args);
+    const flate_example_step = b.step(
+        "example-flate",
+        "Run the flate example CLI (encode|decode [FILE|-])",
+    );
+    flate_example_step.dependOn(&run_flate_example.step);
+
     // External-oracle harness (src/flate/oracle.zig): decodes one stream from
     // a file into a caller-sized buffer, for the `just flate-oracle` lane.
     // Installed, not part of the module surface or the test/check steps.
@@ -106,7 +129,7 @@ pub fn build(b: *Build) void {
     );
     flate_oracle_step.dependOn(&install_flate_oracle.step);
 
-    // The example's framing test runs with the unit tests.
+    // The examples' own tests run with the unit tests.
     const snappy_example_tests = b.addTest(.{
         .root_module = snappy_example_mod,
         .test_runner = test_runner,
@@ -114,6 +137,13 @@ pub fn build(b: *Build) void {
     const run_snappy_example_tests = b.addRunArtifact(snappy_example_tests);
     run_snappy_example_tests.has_side_effects = true;
     test_step.dependOn(&run_snappy_example_tests.step);
+    const flate_example_tests = b.addTest(.{
+        .root_module = flate_example_mod,
+        .test_runner = test_runner,
+    });
+    const run_flate_example_tests = b.addRunArtifact(flate_example_tests);
+    run_flate_example_tests.has_side_effects = true;
+    test_step.dependOn(&run_flate_example_tests.step);
 
     // Unit tests: one test executable per module.
     const snappy_tests = b.addTest(.{

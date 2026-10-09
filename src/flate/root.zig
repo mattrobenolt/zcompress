@@ -1,8 +1,8 @@
 //! Raw DEFLATE (RFC 1951) codec. Imports only `std` and `fastmem`. Exposed as
 //! its own build module (`flate`) and re-exported by the zcompress umbrella
-//! module: a full inflate (stored, fixed, and dynamic blocks) and the fast
-//! fixed-Huffman encoder over caller-owned buffers, zero heap allocation. The
-//! streaming `Io` layer is a later lane.
+//! module: a full inflate (stored, fixed, and dynamic blocks), the fast
+//! fixed-Huffman encoder, and the streaming `Io` layer (`Reader`/`Writer`)
+//! over raw deflate — caller-owned buffers, zero heap allocation, end to end.
 //!
 //! Format: docs/research/specs/rfc1951-deflate.txt
 //! API and design: src/flate/README.md
@@ -38,9 +38,21 @@ pub const DecompressError = decode.DecompressError;
 /// ignored (BFINAL self-delimits the stream).
 pub const decompress = decode.decompress;
 
+/// A decompressing `Io.Reader` over a raw deflate stream (README.md,
+/// "Streaming"). Consume through `&r.reader`; ends cleanly with
+/// `error.EndOfStream` once the final block's output is consumed. Zero heap
+/// allocation; the caller provides `Reader.Buffer`.
+pub const Reader = @import("Reader.zig");
+/// A compressing `Io.Writer` over a raw deflate stream (README.md,
+/// "Streaming"). Write through `&w.writer`; complete the stream with
+/// `finish`. Zero heap allocation; the caller provides `Writer.Buffer`.
+pub const Writer = @import("Writer.zig");
+
 test {
     _ = encode;
     _ = decode;
+    _ = Writer;
+    _ = Reader;
     _ = @import("golden.zig");
     std.testing.refAllDecls(@This());
 }

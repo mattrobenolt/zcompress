@@ -418,6 +418,11 @@ Semantics:
   stream are not consumed. (That is what lets M3's gzip/zlib readers find
   their footers.) The bit reader refills with `peek`/`toss`, never blind
   reads.
+- The input's own buffer must hold at least 3 bytes — a stored block's
+  LEN/NLEN (`§3.2.4`), or a Huffman code, plus the partial byte already
+  consumed — or the input must end before then. The bit reader buffers ahead
+  through `peek`, so a buffer narrower than that cannot see enough bits to
+  decode a symbol correctly.
 - The contiguous decoded-read cap: the window holds 64 KiB, and the decoder
   can slide it forward only when the consumer has drained everything older
   than the retained 32-KiB tail. Any contiguous request (`peek`/`take`
