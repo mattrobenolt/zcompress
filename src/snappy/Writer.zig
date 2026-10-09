@@ -393,17 +393,8 @@ fn countBlocks(stream: []const u8) usize {
 /// returning the bytes consumed and encoded. Consumes `r` exactly through
 /// its end, then finishes the stream (the final partial block + flush). The
 /// writer and its buffer live on this stack frame; zero allocation.
-pub fn streamAll(r: *Io.Reader, w: *Io.Writer) error{ ReadFailed, WriteFailed }!usize {
-    var n: usize = 0;
+pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!usize {
     var buf: Buffer = undefined;
     var ww: Writer = .init(w, &buf);
-    while (true) {
-        n += r.stream(&ww.writer, .unlimited) catch |err| switch (err) {
-            error.EndOfStream => {
-                try ww.finish();
-                return n;
-            },
-            else => return @errorCast(err),
-        };
-    }
+    return r.streamRemaining(&ww.writer);
 }

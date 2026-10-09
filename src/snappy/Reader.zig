@@ -447,14 +447,8 @@ fn roundTrip(src: []const u8) !void {
 /// returning the decoded bytes served. Consumes `r` exactly through the
 /// stream's end. The reader and its buffer live on this stack frame; zero
 /// allocation.
-pub fn streamAll(r: *Io.Reader, w: *Io.Writer) error{ ReadFailed, WriteFailed }!usize {
-    var n: usize = 0;
+pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!usize {
     var buf: Buffer = undefined;
     var rr: Reader = .init(r, &buf);
-    while (true) {
-        n += rr.reader.stream(w, .unlimited) catch |err| switch (err) {
-            error.EndOfStream => return n,
-            else => return @errorCast(err),
-        };
-    }
+    return rr.reader.streamRemaining(w);
 }

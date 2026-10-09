@@ -630,7 +630,7 @@ pub fn streamAll(
     r: *Io.Reader,
     w: *Io.Writer,
     options: encode.Options,
-) Io.Reader.StreamError!usize {
+) Io.Reader.StreamRemainingError!usize {
     if (options.level == .ratio) return error.ReadFailed;
     var buf: Buffer = undefined;
     var ww: Writer = .init(w, &buf, options);
