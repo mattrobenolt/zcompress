@@ -17,19 +17,19 @@ deliberately out.
 ```zig
 const snappy = @import("snappy");
 
-// Worst-case compressed size — size `out` to this before compress.
+// Worst-case compressed size — size `target` to this before compress.
 snappy.maxCompressedLength(input_len: usize) usize
 
-// Compress `src` into `out` as a raw snappy block. Zero heap allocation.
-// `src.len` must be <= max_block_size (snappy's u16-position limit); a
+// Compress `source` into `target` as a raw snappy block. Zero heap allocation.
+// `source.len` must be <= max_block_size (snappy's u16-position limit); a
 // consumer's framing layer splits larger inputs into blocks.
-snappy.compressBlock(src: []const u8, out: []u8) error{BufferTooSmall}!usize
+snappy.compressBlock(source: []const u8, target: []u8) error{BufferTooSmall}!usize
 
 // Decompress a raw snappy block. Zero heap allocation.
-snappy.decompressBlock(input: []const u8, out: []u8) DecompressError!usize
+snappy.decompressBlock(source: []const u8, target: []u8) DecompressError!usize
 
-// Read the decompressed length (the leading varint) to size `out`.
-snappy.decompressedBlockLen(input: []const u8) DecompressError!usize
+// Read the decompressed length (the leading varint) to size `target`.
+snappy.decompressedBlockLen(source: []const u8) DecompressError!usize
 
 // The block-size precondition: 65536. compressBlock asserts it.
 snappy.max_block_size: usize
@@ -50,8 +50,8 @@ Contracts, stated plainly:
 
 - **Ownership**: the caller owns every buffer, on both sides. Nothing is
   allocated, freed, or retained. There is no allocator in the API at all.
-- **Sizing**: size `out` for `compressBlock` with `maxCompressedLength(src.len)`,
-  and for `decompressBlock` with `decompressedBlockLen(input)`. Both functions
+- **Sizing**: size `target` for `compressBlock` with `maxCompressedLength(src.len)`,
+  and for `decompressBlock` with `decompressedBlockLen(source)`. Both functions
   return `error.BufferTooSmall` rather than truncating. Snappy never expands
   past its bound, so the sizing helpers are exact upper bounds.
 - **Corruption**: `decompressBlock` fails closed on any malformed tag,

@@ -69,8 +69,8 @@ pub fn finish(w: *Writer) Io.Writer.Error!void {
 fn emitBlock(w: *Writer) Io.Writer.Error!void {
     if (w.writer.end == 0) return;
     var scratch: [scratch_len]u8 = undefined;
-    const src = w.writer.buffer[0..w.writer.end];
-    const n = encode.compressBlock(src, &scratch) catch |err| switch (err) {
+    const source = w.writer.buffer[0..w.writer.end];
+    const n = encode.compressBlock(source, &scratch) catch |err| switch (err) {
         // `scratch` is sized to the exact worst case for any block.
         error.BufferTooSmall => unreachable,
     };
@@ -79,6 +79,8 @@ fn emitBlock(w: *Writer) Io.Writer.Error!void {
     try w.output.writeAll(&prefix);
     try w.output.writeAll(scratch[0..n]);
     w.writer.end = 0;
+    // Postcondition: the block is fully emitted and the buffer is empty.
+    assert(w.writer.end == 0);
 }
 
 /// The buffer is full: emit it as one block, then accept the front of
@@ -91,31 +93,30 @@ fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!
     try parent.emitBlock();
 
     // Fill from the front of `data` (the last slice repeats `splat` times),
-    // stopping at a partial take when the buffer fills.
+    // stopping when the buffer fills.
     var consumed: usize = 0;
     for (data[0 .. data.len - 1]) |bytes| {
-        if (bytes.len > w.buffer.len - consumed) {
-            const n = w.buffer.len - consumed;
-            fastmem.copy(u8, w.buffer[consumed..][0..n], bytes[0..n]);
-            w.end = w.buffer.len;
-            return w.buffer.len;
-        }
-        fastmem.copy(u8, w.buffer[consumed..][0..bytes.len], bytes);
-        consumed += bytes.len;
+        consumed += accept(w, bytes, consumed);
+        if (consumed == w.buffer.len) break;
     }
-    const pattern = data[data.len - 1];
-    for (0..splat) |_| {
-        if (pattern.len > w.buffer.len - consumed) {
-            const n = w.buffer.len - consumed;
-            fastmem.copy(u8, w.buffer[consumed..][0..n], pattern[0..n]);
-            w.end = w.buffer.len;
-            return w.buffer.len;
+    if (consumed < w.buffer.len) {
+        const pattern = data[data.len - 1];
+        for (0..splat) |_| {
+            consumed += accept(w, pattern, consumed);
+            if (consumed == w.buffer.len) break;
         }
-        fastmem.copy(u8, w.buffer[consumed..][0..pattern.len], pattern);
-        consumed += pattern.len;
     }
+    assert(consumed <= w.buffer.len);
     w.end = consumed;
     return consumed;
+}
+
+/// Copy at most the buffer's remaining space from the front of `bytes`,
+/// returning the bytes taken (a partial take when the buffer fills).
+fn accept(w: *Io.Writer, bytes: []const u8, consumed: usize) usize {
+    const n = @min(bytes.len, w.buffer.len - consumed);
+    fastmem.copy(u8, w.buffer[consumed..][0..n], bytes[0..n]);
+    return n;
 }
 
 fn flush(w: *Io.Writer) Io.Writer.Error!void {

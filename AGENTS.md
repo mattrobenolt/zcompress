@@ -56,6 +56,41 @@ it before you change a kernel or make a performance claim.
   codecs. In `build.zig`, lazy deps must go through `b.lazyImport` /
   `b.lazyDependency`, never `b.dependency`.
 
+## Tiger style
+
+The snappy package is the reference application of Tiger Style (the
+`tiger-style` skill — safety > performance > developer experience). Copy its
+patterns into every codec:
+
+- Centralize control flow in the parent; push pure logic down into helpers
+  with primitive arguments. `decompressBlock` (46 lines) owns the tag
+  dispatch; `decodeLiteral`/`decodeCopy`/`copyMatch` are the leaves.
+  `encodeBlock`'s labeled scan cascade stays in the parent for the same
+  reason — see Deviations.
+- Byte-buffer pairs are named `source`/`target` (equal length, data-flow
+  order: `compressBlock(source, target)`). `in`/`out` name `*Io.Reader` /
+  `*Io.Writer` params. Units go last (`scratch_len`, `max_block_size`,
+  `decoded_region_len`).
+- State machines are enums, not bools: `Reader.State` is
+  `streaming`/`done`/`failed` with the detailed error beside it.
+- Assertions are useful, not ceremonial: caller-guaranteed preconditions
+  (`assert(source.len >= input_margin)` — the gate above guarantees it) and
+  postconditions (`assert(w.writer.end == 0)` after an emit). Hostile input
+  gets error returns, never asserts.
+- Zero dynamic allocation; comptime-sized stack scratch.
+- Batching: whole blocks through the data plane; framing is the control
+  plane.
+
+Deviations, on purpose:
+
+- No Tracy zones — no profiler dependency in this repo. Observability is
+  the benchmark harness plus disassembly.
+- The 70-line function limit is consciously overridden on `encodeBlock`'s
+  scan cascade (154 lines): centralizing that labeled control flow in the
+  parent is the Tiger rule that wins; its pure logic is already extracted
+  (`hash6`, `matchLen`, `load64`, `emitLiteral`, `emitCopy`).
+- House lint is 100 columns (tighter than Tiger's 120).
+
 ## Rules
 
 - Spec-first: a codec's work starts from `docs/research/specs/`. Every format

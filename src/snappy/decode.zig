@@ -35,6 +35,7 @@ const native_arch = builtin.target.cpu.arch;
 const fastmem = @import("fastmem");
 
 const common = @import("common.zig");
+const readInt = common.readInt;
 const readUvarint = common.readUvarint;
 const writeUvarint = common.writeUvarint;
 
@@ -138,8 +139,8 @@ inline fn shuffleBytes(v: Vec16, mask: Vec16) Vec16 {
     }
 }
 
-/// Copy `length` bytes from `out[pos - offset ..]` to `out[pos ..]`, handling
-/// overlap (RLE). `offset > 0` and `offset <= pos` and `pos + length <= out.len`
+/// Copy `length` bytes from `target[pos - offset ..]` to `target[pos ..]`, handling
+/// overlap (RLE). `offset > 0` and `offset <= pos` and `pos + length <= target.len`
 /// are asserted by the caller. This is the hot path for copy tags.
 ///
 /// Strategy:
@@ -150,34 +151,34 @@ inline fn shuffleBytes(v: Vec16, mask: Vec16) Vec16 {
 ///   - `offset > 16`: the 16-byte source window at `pos - offset` does not
 ///     overlap the 16-byte store at `pos`, so a vectorized chunked copy is
 ///     safe.
-fn copyMatch(out: []u8, pos: usize, offset: usize, length: usize) void {
+fn copyMatch(target: []u8, pos: usize, offset: usize, length: usize) void {
     assert(offset > 0);
     assert(offset <= pos);
-    assert(pos + length <= out.len);
+    assert(pos + length <= target.len);
 
     // Non-overlapping: a single vectorized memcpy. The common case for matches
     // into earlier, distinct data.
     if (offset >= length) {
-        fastmem.copy(u8, out[pos..][0..length], out[pos - offset ..][0..length]);
+        fastmem.copy(u8, target[pos..][0..length], target[pos - offset ..][0..length]);
         return;
     }
 
     if (offset <= 16) {
         // Build the 16-byte pattern source safely. The repeating pattern is the
-        // first `offset` bytes at `out[pos-offset]`; loading a full 16 bytes
-        // there could overread past `out.len` near the tail (the output buffer
+        // first `offset` bytes at `target[pos-offset]`; loading a full 16 bytes
+        // there could overread past `target.len` near the tail (the output buffer
         // is sized to the decompressed length, with no slop). So copy just the
         // `offset` source bytes into a zero-padded 16-byte buffer — the shuffle
         // mask only references indices `< offset`, so the padding is never used.
         var src16: [16]u8 = @splat(0);
-        fastmem.copy(u8, src16[0..offset], out[pos - offset ..][0..offset]);
+        fastmem.copy(u8, src16[0..offset], target[pos - offset ..][0..offset]);
         const pattern0: Vec16 = src16;
         var pattern = shuffleBytes(pattern0, pattern_masks[offset - 1]);
         const reshuffle = reshuffle_masks[offset - 1];
         const end = pos + length;
         var p = pos;
         while (p + 16 <= end) : (p += 16) {
-            storeVec(out.ptr + p, pattern);
+            storeVec(target.ptr + p, pattern);
             pattern = shuffleBytes(pattern, reshuffle);
         }
         // Tail: the remaining (< 16) bytes are the leading bytes of the current
@@ -188,7 +189,7 @@ fn copyMatch(out: []u8, pos: usize, offset: usize, length: usize) void {
         const tail = end - p;
         var i: usize = 0;
         while (i < tail) : (i += 1) {
-            out[p + i] = pattern_bytes[i];
+            target[p + i] = pattern_bytes[i];
         }
         return;
     }
@@ -199,99 +200,67 @@ fn copyMatch(out: []u8, pos: usize, offset: usize, length: usize) void {
     var p = pos;
     const end = pos + length;
     while (p + 16 <= end) : (p += 16) {
-        storeVec(out.ptr + p, loadVec(out.ptr + (p - offset)));
+        storeVec(target.ptr + p, loadVec(target.ptr + (p - offset)));
     }
     const tail = end - p;
     if (tail > 0) {
-        fastmem.copy(u8, out[p..][0..tail], out[p - offset ..][0..tail]);
+        fastmem.copy(u8, target[p..][0..tail], target[p - offset ..][0..tail]);
     }
 }
 
 /// Decompressed byte length of a raw snappy block (the varint at the start).
 /// `error.DecompressionFailed` if the varint is corrupt/truncated.
-pub fn decompressedBlockLen(input: []const u8) DecompressError!usize {
+pub fn decompressedBlockLen(source: []const u8) DecompressError!usize {
     var pos: usize = 0;
-    return readUvarint(input, &pos);
+    return readUvarint(source, &pos);
 }
 
-/// Decompress a raw snappy block from `input` into `out`, returning bytes
-/// written. `error.BufferTooSmall` when `out` is too small (size via
-/// `decompressedBlockLen`). `error.DecompressionFailed` on corrupt input. Zero
+/// Decompress a raw snappy block from `source` into `target`, returning bytes
+/// written. `error.BufferTooSmall` when `target` is too small (size via
+/// `decompressedBlockLen`). `error.DecompressionFailed` on corrupt source. Zero
 /// heap allocation.
-pub fn decompressBlock(input: []const u8, out: []u8) DecompressError!usize {
+/// The tag dispatch loop: a literal or a copy per tag, until the source ends
+/// or the declared `uncomp_len` is reached. Pure per-tag logic lives in
+/// `decodeLiteral`/`decodeCopy` (the parent owns the control flow).
+pub fn decompressBlock(source: []const u8, target: []u8) DecompressError!usize {
     var in_pos: usize = 0;
-    const uncomp_len = try readUvarint(input, &in_pos);
-    if (uncomp_len > out.len) return error.BufferTooSmall;
+    const uncomp_len = try readUvarint(source, &in_pos);
+    if (uncomp_len > target.len) return error.BufferTooSmall;
 
     var out_pos: usize = 0;
-    while (in_pos < input.len) {
-        const tag = input[in_pos];
+    while (in_pos < source.len) {
+        const tag = source[in_pos];
         in_pos += 1;
 
         switch (tag & 3) {
-            0 => {
-                // Literal: the 6-bit field (tag >> 2) encodes the length.
-                // 0–59 => length = field + 1. 60–63 => length is in the next
-                // 1–4 bytes (LE), plus 1.
-                const code6: u8 = tag >> 2;
-                var length: usize = undefined;
-                if (code6 < 60) {
-                    length = @as(usize, code6) + 1;
-                } else {
-                    const extra: usize = @as(usize, code6) - 59; // 60→1 .. 63→4
-                    if (in_pos + extra > input.len) return error.DecompressionFailed;
-                    length = 1;
-                    var i: usize = 0;
-                    while (i < extra) : (i += 1) {
-                        length += @as(usize, input[in_pos + i]) << @intCast(i * 8);
-                    }
-                    in_pos += extra;
-                }
-                if (in_pos + length > input.len) return error.DecompressionFailed;
-                if (out_pos + length > uncomp_len) return error.DecompressionFailed;
-                fastmem.copy(u8, out[out_pos..][0..length], input[in_pos..][0..length]);
-                in_pos += length;
-                out_pos += length;
-            },
+            0 => try decodeLiteral(source, &in_pos, target, &out_pos, uncomp_len),
             1 => {
                 // Copy with 1-byte offset: length = ((tag >> 2) & 7) + 4,
-                // offset = ((tag >> 5) << 8) | next_byte.
+                // offset = ((tag >> 5) << 8) | next_byte. The offset spans the
+                // tag bits, so it is not a plain little-endian read.
                 const length: usize = @as(usize, (tag >> 2) & 0x07) + 4;
-                if (in_pos >= input.len) return error.DecompressionFailed;
-                const offset: usize = (@as(usize, tag >> 5) << 8) | @as(usize, input[in_pos]);
+                if (in_pos >= source.len) return error.DecompressionFailed;
+                const offset: usize = (@as(usize, tag >> 5) << 8) | @as(usize, source[in_pos]);
                 in_pos += 1;
-                if (offset == 0 or offset > out_pos) return error.DecompressionFailed;
-                if (out_pos + length > uncomp_len) return error.DecompressionFailed;
-                copyMatch(out, out_pos, offset, length);
-                out_pos += length;
+                try decodeCopy(target, &out_pos, uncomp_len, offset, length);
             },
             2 => {
                 // Copy with 2-byte offset: length = (tag >> 2) + 1,
                 // offset = next 2 bytes LE.
                 const length: usize = @as(usize, tag >> 2) + 1;
-                if (in_pos + 1 >= input.len) return error.DecompressionFailed;
-                const offset: usize = @as(usize, input[in_pos]) |
-                    (@as(usize, input[in_pos + 1]) << 8);
+                if (in_pos + 2 > source.len) return error.DecompressionFailed;
+                const offset: usize = readInt(u16, source.ptr[in_pos..][0..2]);
                 in_pos += 2;
-                if (offset == 0 or offset > out_pos) return error.DecompressionFailed;
-                if (out_pos + length > uncomp_len) return error.DecompressionFailed;
-                copyMatch(out, out_pos, offset, length);
-                out_pos += length;
+                try decodeCopy(target, &out_pos, uncomp_len, offset, length);
             },
             3 => {
                 // Copy with 4-byte offset: length = (tag >> 2) + 1,
                 // offset = next 4 bytes LE.
                 const length: usize = @as(usize, tag >> 2) + 1;
-                if (in_pos + 3 >= input.len) return error.DecompressionFailed;
-                const offset: usize = @as(usize, input[in_pos]) |
-                    (@as(usize, input[in_pos + 1]) << 8) |
-                    (@as(usize, input[in_pos + 2]) << 16) |
-                    (@as(usize, input[in_pos + 3]) << 24);
+                if (in_pos + 4 > source.len) return error.DecompressionFailed;
+                const offset: usize = readInt(u32, source.ptr[in_pos..][0..4]);
                 in_pos += 4;
-                if (offset == 0 or offset > out_pos) return error.DecompressionFailed;
-                if (out_pos + length > uncomp_len) return error.DecompressionFailed;
-                copyMatch(out, out_pos, offset, length);
-                out_pos += length;
+                try decodeCopy(target, &out_pos, uncomp_len, offset, length);
             },
             else => unreachable,
         }
@@ -301,16 +270,59 @@ pub fn decompressBlock(input: []const u8, out: []u8) DecompressError!usize {
     return out_pos;
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+/// Decode one literal tag: the 6-bit field (tag >> 2) encodes the length.
+/// 0–59 => length = field + 1. 60–63 => length is in the next 1–4 bytes
+/// (LE), plus 1. The caller has already consumed the tag byte.
+fn decodeLiteral(
+    source: []const u8,
+    in_pos: *usize,
+    target: []u8,
+    out_pos: *usize,
+    uncomp_len: usize,
+) DecompressError!void {
+    const code6: u8 = source[in_pos.* - 1] >> 2;
+    var length: usize = undefined;
+    if (code6 < 60) {
+        length = @as(usize, code6) + 1;
+    } else {
+        const extra: usize = @as(usize, code6) - 59; // 60→1 .. 63→4
+        if (in_pos.* + extra > source.len) return error.DecompressionFailed;
+        length = 1;
+        var i: usize = 0;
+        while (i < extra) : (i += 1) {
+            length += @as(usize, source[in_pos.* + i]) << @intCast(i * 8);
+        }
+        in_pos.* += extra;
+    }
+    if (in_pos.* + length > source.len) return error.DecompressionFailed;
+    if (out_pos.* + length > uncomp_len) return error.DecompressionFailed;
+    fastmem.copy(u8, target[out_pos.*..][0..length], source[in_pos.*..][0..length]);
+    in_pos.* += length;
+    out_pos.* += length;
+}
+
+/// Validate and apply one copy tag: a zero or backwards offset is corrupt,
+/// and a length past `uncomp_len` is corrupt. The caller has already consumed
+/// the tag byte and the offset bytes.
+fn decodeCopy(
+    target: []u8,
+    out_pos: *usize,
+    uncomp_len: usize,
+    offset: usize,
+    length: usize,
+) DecompressError!void {
+    if (offset == 0 or offset > out_pos.*) return error.DecompressionFailed;
+    if (out_pos.* + length > uncomp_len) return error.DecompressionFailed;
+    copyMatch(target, out_pos.*, offset, length);
+    out_pos.* += length;
+}
 
 test "decompress: empty block" {
     const block = [_]u8{0x00}; // varint(0)
     const dlen = try decompressedBlockLen(&block);
     try testing.expectEqual(@as(usize, 0), dlen);
-    var out: [1]u8 = undefined;
-    const blen = try decompressBlock(&block, &out);
+    var target: [1]u8 = undefined;
+    const blen = try decompressBlock(&block, &target);
     try testing.expectEqual(@as(usize, 0), blen);
 }
 
@@ -323,59 +335,60 @@ test "decompress: literal-only block" {
     fastmem.copy(u8, block[2..][0..msg.len], msg);
     const dlen = try decompressedBlockLen(block[0 .. 2 + msg.len]);
     try testing.expectEqual(msg.len, dlen);
-    var out: [32]u8 = undefined;
-    const blen = try decompressBlock(block[0 .. 2 + msg.len], &out);
-    try testing.expectEqualSlices(u8, msg, out[0..blen]);
+    var target: [32]u8 = undefined;
+    const blen = try decompressBlock(block[0 .. 2 + msg.len], &target);
+    try testing.expectEqualSlices(u8, msg, target[0..blen]);
 }
 
 test "decompress: copy with 1-byte offset (overlapping RLE)" {
     // Decompressed: "ABABABAB" (8 bytes).
     // varint(8)=0x08, literal "AB" (tag 0x04), copy len6 off2 (0x09 0x02).
     const snappy_block = [_]u8{ 0x08, 0x04, 'A', 'B', 0x09, 0x02 };
-    var out: [8]u8 = undefined;
-    const blen = try decompressBlock(&snappy_block, &out);
+    var target: [8]u8 = undefined;
+    const blen = try decompressBlock(&snappy_block, &target);
     try testing.expectEqual(@as(usize, 8), blen);
-    try testing.expectEqualSlices(u8, "ABABABAB", out[0..blen]);
+    try testing.expectEqualSlices(u8, "ABABABAB", target[0..blen]);
 }
 
 test "decompress: copy with 2-byte offset" {
     // Decompressed: "XXXX" + 64 bytes of 'Y' (68 bytes total).
     // varint(68)=0x44, literal "XXXX" (tag 0x0C), copy len64 off4 (0xFE 0x04 0x00).
     const snappy_block = [_]u8{ 0x44, 0x0C, 'X', 'X', 'X', 'X', 0xFE, 0x04, 0x00 };
-    var out: [68]u8 = undefined;
-    const blen = try decompressBlock(&snappy_block, &out);
+    var target: [68]u8 = undefined;
+    const blen = try decompressBlock(&snappy_block, &target);
     try testing.expectEqual(@as(usize, 68), blen);
-    try testing.expectEqualSlices(u8, "XXXX", out[0..4]);
-    for (out[4..68], 0..) |b, i| {
-        try testing.expectEqual(out[i % 4], b);
+    try testing.expectEqualSlices(u8, "XXXX", target[0..4]);
+    for (target[4..68], 0..) |b, i| {
+        try testing.expectEqual(target[i % 4], b);
     }
 }
 
 test "decompress: overlapping copy offset 1 (single-byte run)" {
     // varint(5)=0x05, literal "A" (tag 0x00), copy len4 off1 (0x01 0x01).
     const snappy_block = [_]u8{ 0x05, 0x00, 'A', 0x01, 0x01 };
-    var out: [5]u8 = undefined;
-    const blen = try decompressBlock(&snappy_block, &out);
+    var target: [5]u8 = undefined;
+    const blen = try decompressBlock(&snappy_block, &target);
     try testing.expectEqual(@as(usize, 5), blen);
-    try testing.expectEqualSlices(u8, "AAAAA", out[0..blen]);
+    try testing.expectEqualSlices(u8, "AAAAA", target[0..blen]);
 }
 
 test "decompress: corrupt block returns DecompressionFailed" {
     const bad = [_]u8{0x80}; // truncated varint
-    var out: [8]u8 = undefined;
-    try testing.expectError(error.DecompressionFailed, decompressBlock(&bad, &out));
+    var target: [8]u8 = undefined;
+    try testing.expectError(error.DecompressionFailed, decompressBlock(&bad, &target));
     try testing.expectError(error.DecompressionFailed, decompressedBlockLen(&bad));
 }
 
-test "decompress: too-small out buffer returns BufferTooSmall" {
-    // varint(13) + literal tag + 13 bytes, but out is only 4 bytes.
+test "decompress: too-small target buffer returns BufferTooSmall" {
+    // varint(13) + literal tag + 13 bytes, but target is only 4 bytes.
     const msg = "hello, snappy";
     var block: [16]u8 = undefined;
     block[0] = 0x0D;
     block[1] = 0x30;
     fastmem.copy(u8, block[2..][0..msg.len], msg);
-    var out: [4]u8 = undefined;
-    try testing.expectError(error.BufferTooSmall, decompressBlock(block[0 .. 2 + msg.len], &out));
+    var target: [4]u8 = undefined;
+    const block_view = block[0 .. 2 + msg.len];
+    try testing.expectError(error.BufferTooSmall, decompressBlock(block_view, &target));
 }
 
 test "copyMatch: non-overlapping uses plain copy" {
@@ -406,15 +419,15 @@ test "copyMatch: SIMD shuffle for small offsets round-trips" {
 // ---------------------------------------------------------------------------
 // Golden decode vectors — ported from golang/snappy's TestDecode, TestDecodeCopy4,
 // and TestDecodeLengthOffset. These are the authoritative conformance cases:
-// every tag type, every extended-literal length form, and the corrupt-input
+// every tag type, every extended-literal length form, and the corrupt-source
 // rejections (zero offset, offset past start, inconsistent dLen, truncated
 // length/offset bytes). A conformant snappy decoder must produce exactly the
-// documented output or reject exactly the documented corrupt input.
+// documented output or reject exactly the documented corrupt source.
 //
 // Source: https://github.com/golang/snappy/blob/master/snappy_test.go
 //
 // Note on encoder golden vectors: snappy does NOT mandate a canonical
-// compressed form ("there is more than one valid encoding of any given input",
+// compressed form ("there is more than one valid encoding of any given source",
 // per golang/snappy). So we do NOT assert byte-identical encoder output against
 // reference corpora — only that our output round-trips and our decoder accepts
 // any valid block. These decode vectors are the real interop bar.
@@ -428,12 +441,12 @@ test "copyMatch: SIMD shuffle for small offsets round-trips" {
 const overrun_base: u8 = 0xa0;
 const overrun_len: u8 = 37;
 
-/// One decode test case: `input` is a raw snappy block (varint dLen + tags),
+/// One decode test case: `source` is a raw snappy block (varint dLen + tags),
 /// `want` is the expected decompressed bytes (empty when expecting an error),
-/// and `want_err` is true when the input must be rejected as corrupt.
+/// and `want_err` is true when the source must be rejected as corrupt.
 const DecodeCase = struct {
     desc: []const u8,
-    input: []const u8,
+    source: []const u8,
     want: []const u8,
     want_err: bool,
 };
@@ -441,9 +454,9 @@ const DecodeCase = struct {
 /// Run one decode case against `decompressBlock`, checking the decoded bytes
 /// and that no byte past dLen in `d_buf` was modified (overrun check).
 fn checkDecodeCase(d_buf: []u8, tc: DecodeCase) !void {
-    // The input must not contain the sentinel bytes, or the overrun check is
+    // The source must not contain the sentinel bytes, or the overrun check is
     // meaningless. (All golang vectors satisfy this by construction.)
-    for (tc.input) |x| {
+    for (tc.source) |x| {
         try testing.expect(!(overrun_base <= x and x < overrun_base + overrun_len));
     }
 
@@ -452,18 +465,18 @@ fn checkDecodeCase(d_buf: []u8, tc: DecodeCase) !void {
 
     // dLen is the leading varint; size the output window to it.
     var vp: usize = 0;
-    const d_len = try readUvarint(tc.input, &vp);
+    const d_len = try readUvarint(tc.source, &vp);
     try testing.expect(d_len <= d_buf.len);
 
     if (tc.want_err) {
         try testing.expectError(
             error.DecompressionFailed,
-            decompressBlock(tc.input, d_buf[0..d_len]),
+            decompressBlock(tc.source, d_buf[0..d_len]),
         );
         return;
     }
 
-    const n = try decompressBlock(tc.input, d_buf[0..d_len]);
+    const n = try decompressBlock(tc.source, d_buf[0..d_len]);
     try testing.expectEqualSlices(u8, tc.want, d_buf[0..n]);
 
     // Overrun: every byte from dLen onward must still hold its sentinel.
@@ -480,31 +493,31 @@ test "golden decode: golang/snappy TestDecode vector table" {
     const cases = [_]DecodeCase{
         .{
             .desc = "dLen=0; valid",
-            .input = "\x00",
+            .source = "\x00",
             .want = "",
             .want_err = false,
         },
         .{
             .desc = "dLen=3; lit 0-byte len; valid",
-            .input = "\x03\x08\xff\xff\xff",
+            .source = "\x03\x08\xff\xff\xff",
             .want = "\xff\xff\xff",
             .want_err = false,
         },
         .{
             .desc = "dLen=2; lit 0-byte len; not enough dst",
-            .input = "\x02\x08\xff\xff\xff",
+            .source = "\x02\x08\xff\xff\xff",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=3; lit 0-byte len; not enough src",
-            .input = "\x03\x08\xff\xff",
+            .source = "\x03\x08\xff\xff",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=40; lit 0-byte len; valid",
-            .input = blk: {
+            .source = blk: {
                 var b: [42]u8 = undefined;
                 b[0] = 0x28;
                 b[1] = 0x9c;
@@ -516,151 +529,151 @@ test "golden decode: golang/snappy TestDecode vector table" {
         },
         .{
             .desc = "dLen=1; lit 1-byte len; truncated",
-            .input = "\x01\xf0",
+            .source = "\x01\xf0",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=3; lit 1-byte len; valid",
-            .input = "\x03\xf0\x02\xff\xff\xff",
+            .source = "\x03\xf0\x02\xff\xff\xff",
             .want = "\xff\xff\xff",
             .want_err = false,
         },
         .{
             .desc = "dLen=1; lit 2-byte len; truncated",
-            .input = "\x01\xf4\x00",
+            .source = "\x01\xf4\x00",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=3; lit 2-byte len; valid",
-            .input = "\x03\xf4\x02\x00\xff\xff\xff",
+            .source = "\x03\xf4\x02\x00\xff\xff\xff",
             .want = "\xff\xff\xff",
             .want_err = false,
         },
         .{
             .desc = "dLen=1; lit 3-byte len; truncated",
-            .input = "\x01\xf8\x00\x00",
+            .source = "\x01\xf8\x00\x00",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=3; lit 3-byte len; valid",
-            .input = "\x03\xf8\x02\x00\x00\xff\xff\xff",
+            .source = "\x03\xf8\x02\x00\x00\xff\xff\xff",
             .want = "\xff\xff\xff",
             .want_err = false,
         },
         .{
             .desc = "dLen=1; lit 4-byte len; truncated",
-            .input = "\x01\xfc\x00\x00\x00",
+            .source = "\x01\xfc\x00\x00\x00",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=1; lit 4-byte len; not enough dst",
-            .input = "\x01\xfc\x02\x00\x00\x00\xff\xff\xff",
+            .source = "\x01\xfc\x02\x00\x00\x00\xff\xff\xff",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=4; lit 4-byte len; not enough src",
-            .input = "\x04\xfc\x02\x00\x00\x00\xff",
+            .source = "\x04\xfc\x02\x00\x00\x00\xff",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=3; lit 4-byte len; valid",
-            .input = "\x03\xfc\x02\x00\x00\x00\xff\xff\xff",
+            .source = "\x03\xfc\x02\x00\x00\x00\xff\xff\xff",
             .want = "\xff\xff\xff",
             .want_err = false,
         },
         .{
             .desc = "dLen=4; copy1; truncated extra",
-            .input = "\x04\x01",
+            .source = "\x04\x01",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=4; copy2; truncated extra",
-            .input = "\x04\x02\x00",
+            .source = "\x04\x02\x00",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=4; copy4; truncated extra",
-            .input = "\x04\x03\x00\x00\x00",
+            .source = "\x04\x03\x00\x00\x00",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=4; lit 'abcd'; valid",
-            .input = "\x04\x0cabcd",
+            .source = "\x04\x0cabcd",
             .want = "abcd",
             .want_err = false,
         },
         .{
             .desc = "dLen=13; lit abcd; copy1 len9 off4",
-            .input = "\x0d\x0cabcd\x15\x04",
+            .source = "\x0d\x0cabcd\x15\x04",
             .want = "abcdabcdabcda",
             .want_err = false,
         },
         .{
             .desc = "dLen=8; lit abcd; copy1 len4 off4",
-            .input = "\x08\x0cabcd\x01\x04",
+            .source = "\x08\x0cabcd\x01\x04",
             .want = "abcdabcd",
             .want_err = false,
         },
         .{
             .desc = "dLen=8; lit abcd; copy1 len4 off2",
-            .input = "\x08\x0cabcd\x01\x02",
+            .source = "\x08\x0cabcd\x01\x02",
             .want = "abcdcdcd",
             .want_err = false,
         },
         .{
             .desc = "dLen=8; lit abcd; copy1 len4 off1",
-            .input = "\x08\x0cabcd\x01\x01",
+            .source = "\x08\x0cabcd\x01\x01",
             .want = "abcddddd",
             .want_err = false,
         },
         .{
             .desc = "dLen=8; lit abcd; copy1 len4 off0; zero offset",
-            .input = "\x08\x0cabcd\x01\x00",
+            .source = "\x08\x0cabcd\x01\x00",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=9; lit abcd; copy1 len4 off4; bad dLen",
-            .input = "\x09\x0cabcd\x01\x04",
+            .source = "\x09\x0cabcd\x01\x04",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=8; lit abcd; copy1 len4 off5; offset too large",
-            .input = "\x08\x0cabcd\x01\x05",
+            .source = "\x08\x0cabcd\x01\x05",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=7; lit abcd; copy1 len4 off4; length too large",
-            .input = "\x07\x0cabcd\x01\x04",
+            .source = "\x07\x0cabcd\x01\x04",
             .want = "",
             .want_err = true,
         },
         .{
             .desc = "dLen=6; lit abcd; copy2 len2 off3",
-            .input = "\x06\x0cabcd\x06\x03\x00",
+            .source = "\x06\x0cabcd\x06\x03\x00",
             .want = "abcdbc",
             .want_err = false,
         },
         .{
             .desc = "dLen=6; lit abcd; copy4 len2 off3",
-            .input = "\x06\x0cabcd\x07\x03\x00\x00\x00",
+            .source = "\x06\x0cabcd\x07\x03\x00\x00\x00",
             .want = "abcdbc",
             .want_err = false,
         },
         .{
             .desc = "dLen=0; copy4; msb set (0x93); go-fuzz",
-            .input = "\x00\xfc000\x93",
+            .source = "\x00\xfc000\x93",
             .want = "",
             .want_err = true,
         },
@@ -681,45 +694,45 @@ test "golden decode: large copy-4 offset (golang TestDecodeCopy4)" {
     // the 4-byte-offset copy with a real large offset and a 64KiB literal.
     const dots_len: usize = 65536;
     const total: usize = 3 + 5 + (3 + dots_len) + 5; // varint(65545)=3, lit pqrs, lit dots, copy4
-    const input = try testing.allocator.alloc(u8, total);
-    defer testing.allocator.free(input);
+    const source = try testing.allocator.alloc(u8, total);
+    defer testing.allocator.free(source);
     var p: usize = 0;
     // varint 65545 = 0x89 0x80 0x04
-    input[p] = 0x89;
-    input[p + 1] = 0x80;
-    input[p + 2] = 0x04;
+    source[p] = 0x89;
+    source[p + 1] = 0x80;
+    source[p + 2] = 0x04;
     p += 3;
     // literal "pqrs" (length 4 -> tag (4-1)<<2 = 0x0c)
-    input[p] = 0x0c;
-    fastmem.copy(u8, input[p + 1 ..][0..4], "pqrs");
+    source[p] = 0x0c;
+    fastmem.copy(u8, source[p + 1 ..][0..4], "pqrs");
     p += 5;
     // literal 65536 '.' (length 65536 -> 2-byte extended: tag 0xf4, len-1 LE)
-    input[p] = 0xf4;
+    source[p] = 0xf4;
     const n: u32 = @intCast(dots_len - 1);
-    input[p + 1] = @truncate(n);
-    input[p + 2] = @truncate(n >> 8);
+    source[p + 1] = @truncate(n);
+    source[p + 2] = @truncate(n >> 8);
     p += 3;
-    fastmem.set(u8, input[p..][0..dots_len], '.');
+    fastmem.set(u8, source[p..][0..dots_len], '.');
     p += dots_len;
     // copy-4: length 5, offset 65540. tag = ((5-1)<<2)|0b11 = 0x13.
     // offset 65540 = 0x00010004 LE.
-    input[p] = 0x13;
-    input[p + 1] = 0x04;
-    input[p + 2] = 0x00;
-    input[p + 3] = 0x01;
-    input[p + 4] = 0x00;
+    source[p] = 0x13;
+    source[p + 1] = 0x04;
+    source[p + 2] = 0x00;
+    source[p + 3] = 0x01;
+    source[p + 4] = 0x00;
     p += 5;
     try testing.expectEqual(total, p);
 
     const d_len: usize = 65545;
-    const out = try testing.allocator.alloc(u8, d_len);
-    defer testing.allocator.free(out);
-    const got = try decompressBlock(input, out);
+    const target = try testing.allocator.alloc(u8, d_len);
+    defer testing.allocator.free(target);
+    const got = try decompressBlock(source, target);
     try testing.expectEqual(d_len, got);
     // want = "pqrs" + dots + "pqrs."
-    try testing.expectEqualSlices(u8, "pqrs", out[0..4]);
-    for (out[4..][0..dots_len]) |b| try testing.expectEqual(@as(u8, '.'), b);
-    try testing.expectEqualSlices(u8, "pqrs.", out[4 + dots_len ..][0..5]);
+    try testing.expectEqualSlices(u8, "pqrs", target[0..4]);
+    for (target[4..][0..dots_len]) |b| try testing.expectEqual(@as(u8, '.'), b);
+    try testing.expectEqualSlices(u8, "pqrs.", target[4 + dots_len ..][0..5]);
 }
 
 test "golden decode: literal + copy2 + literal (golang TestDecodeLengthOffset)" {
@@ -738,7 +751,7 @@ test "golden decode: literal + copy2 + literal (golang TestDecodeLengthOffset)" 
             for (0..19) |suffix_len| {
                 const total_len = prefix.len + length + suffix_len;
 
-                // Build the input block: varint(total_len) + literal(prefix)
+                // Build the source block: varint(total_len) + literal(prefix)
                 // + copy2(length, offset) + [literal(suffix)].
                 var p: usize = 0;
                 p += writeUvarint(input_buf[p..], total_len) catch unreachable;
@@ -756,12 +769,12 @@ test "golden decode: literal + copy2 + literal (golang TestDecodeLengthOffset)" 
                     fastmem.copy(u8, input_buf[p..][0..suffix_len], suffix[0..suffix_len]);
                     p += suffix_len;
                 }
-                const input = input_buf[0..p];
+                const source = input_buf[0..p];
 
                 // Pre-fill got_buf with sentinels and decode.
                 for (&got_buf, 0..) |*b, j| b.* = overrun_base +
                     @as(u8, @intCast(j % overrun_len));
-                const n = decompressBlock(input, got_buf[0..total_len]) catch |err| {
+                const n = decompressBlock(source, got_buf[0..total_len]) catch |err| {
                     print("\nFAIL length={d} offset={d} suffixLen={d}: {s}\n", .{
                         length, offset, suffix_len, @errorName(err),
                     });
@@ -800,9 +813,9 @@ test "golden decode: format_description.txt hand examples" {
     //   varint(7)=0x07, literal "xab" (tag (3-1)<<2=0x08), copy1 len4 off2
     //   (tag = 01|((4-4)<<2)|((2>>8)<<5) = 0x01, off byte 0x02).
     const block = [_]u8{ 0x07, 0x08, 'x', 'a', 'b', 0x01, 0x02 };
-    var out: [7]u8 = undefined;
-    const n = try decompressBlock(&block, &out);
-    try testing.expectEqualSlices(u8, "xababab", out[0..n]);
+    var target: [7]u8 = undefined;
+    const n = try decompressBlock(&block, &target);
+    try testing.expectEqualSlices(u8, "xababab", target[0..n]);
 }
 
 test "golden decode: varint prefix examples from the spec" {

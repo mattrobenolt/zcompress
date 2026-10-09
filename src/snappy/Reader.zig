@@ -34,12 +34,16 @@ const decoded_region_len = 2 * encode.max_block_size;
 
 pub const Reader = @This();
 
+/// The stream lifecycle: `streaming` until the input ends cleanly at a
+/// block boundary (`done`) or a failure sticks (`failed`, details in `err`).
+const State = enum { streaming, done, failed };
+
 reader: Io.Reader,
 input: *Io.Reader,
-/// Detailed error after a failure; the interface reports `error.ReadFailed`.
+state: State = .streaming,
+/// Detailed error once `state == .failed`; the interface reports
+/// `error.ReadFailed`.
 err: ?anyerror = null,
-/// Set once the input ended cleanly at a block boundary.
-done: bool = false,
 
 const vtable: Io.Reader.VTable = .{
     .stream = stream,
@@ -83,7 +87,7 @@ fn fillNextBlock(r: *Reader) Io.Reader.Error!usize {
     // the stream.
     _ = r.input.peek(1) catch |err| switch (err) {
         error.EndOfStream => {
-            r.done = true;
+            r.state = .done;
             return error.EndOfStream;
         },
         else => |e| return fail(r, e),
@@ -97,10 +101,10 @@ fn fillNextBlock(r: *Reader) Io.Reader.Error!usize {
     if (block_len == 0 or block_len > Writer.scratch_len) return fail(r, error.InvalidStream);
 
     const staging = r.reader.buffer[decoded_region_len..];
-    readExact(r.input, staging[0..block_len]) catch |err| switch (err) {
+    readExact(r.input, staging[0..block_len]) catch |err| return switch (err) {
         // The block was cut short: corrupt framing.
-        error.EndOfStream => return fail(r, error.Truncated),
-        else => |e| return fail(r, e),
+        error.EndOfStream => fail(r, error.Truncated),
+        else => |e| fail(r, e),
     };
 
     const block = staging[0..block_len];
@@ -116,18 +120,29 @@ fn fillNextBlock(r: *Reader) Io.Reader.Error!usize {
 }
 
 fn fail(r: *Reader, err: anyerror) Io.Reader.Error {
+    r.state = .failed;
     r.err = err;
     return error.ReadFailed;
 }
 
+/// The sticky guard shared by the vtable entries: a failed reader stays
+/// failed, a done reader stays at the clean end.
+fn guard(r: *Reader) ?Io.Reader.Error {
+    return switch (r.state) {
+        .failed => error.ReadFailed,
+        .done => error.EndOfStream,
+        .streaming => null,
+    };
+}
+
 /// Read exactly `dest.len` bytes from `input`. A short input is
 /// `error.EndOfStream` (the caller maps it to corrupt framing).
-fn readExact(input: *Io.Reader, dest: []u8) Io.Reader.Error!void {
-    var fw: Io.Writer = .fixed(dest);
-    while (fw.end < dest.len) {
-        _ = input.stream(&fw, .limited(dest.len - fw.end)) catch |err| switch (err) {
-            error.EndOfStream => return error.EndOfStream,
-            error.ReadFailed => return error.ReadFailed,
+fn readExact(in: *Io.Reader, target: []u8) Io.Reader.Error!void {
+    var fw: Io.Writer = .fixed(target);
+    while (fw.end < target.len) {
+        _ = in.stream(&fw, .limited(target.len - fw.end)) catch |err| return switch (err) {
+            error.EndOfStream => error.EndOfStream,
+            error.ReadFailed => error.ReadFailed,
             // `stream` writes at most the remaining capacity of `fw`.
             error.WriteFailed => unreachable,
         };
@@ -138,15 +153,13 @@ fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!u
     _ = w;
     _ = limit;
     const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
-    if (parent.err != null) return error.ReadFailed;
-    if (parent.done) return error.EndOfStream;
+    if (guard(parent)) |err| return err;
     return fillNextBlock(parent);
 }
 
 fn discard(r: *Io.Reader, limit: Io.Limit) Io.Reader.Error!usize {
     const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
-    if (parent.err != null) return error.ReadFailed;
-    if (parent.done) return error.EndOfStream;
+    if (guard(parent)) |err| return err;
     _ = try fillNextBlock(parent);
     const n = limit.minInt(r.end - r.seek);
     r.seek += n;
@@ -156,8 +169,7 @@ fn discard(r: *Io.Reader, limit: Io.Limit) Io.Reader.Error!usize {
 fn readVec(r: *Io.Reader, data: [][]u8) Io.Reader.Error!usize {
     _ = data;
     const parent: *Reader = @alignCast(@fieldParentPtr("reader", r));
-    if (parent.err != null) return error.ReadFailed;
-    if (parent.done) return error.EndOfStream;
+    if (guard(parent)) |err| return err;
     return fillNextBlock(parent);
 }
 
@@ -229,9 +241,9 @@ test "Reader: peek across blocks stays contiguous" {
 /// Pump `r` into `w` until the clean end of stream.
 fn pump(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamError!void {
     while (true) {
-        _ = r.stream(w, .unlimited) catch |err| switch (err) {
-            error.EndOfStream => return,
-            else => |e| return e,
+        _ = r.stream(w, .unlimited) catch |err| return switch (err) {
+            error.EndOfStream => {},
+            else => |e| e,
         };
     }
 }

@@ -6,12 +6,12 @@
 //! the cursor into a power-of-two `u16` position table, scan forward, and on a
 //! 4-byte match extend it 8 bytes at a time using `@ctz` on the XOR to find the
 //! first mismatch byte. A skip heuristic gradually strides past incompressible
-//! regions. If the encoded form would exceed `src - src>>5 - 5` bytes the whole
+//! regions. If the encoded form would exceed `source - source>>5 - 5` bytes the whole
 //! block is emitted as a single literal (snappy guarantees it never expands
 //! past its bound).
 //!
 //! Zero heap allocation: the hash table is a fixed `[1<<14]u16` stack frame
-//! (32 KiB), sized for the 64 KiB max block. The caller provides the `out`
+//! (32 KiB), sized for the 64 KiB max block. The caller provides the `target`
 //! buffer sized via `maxCompressedLength`.
 //!
 //! Format: https://github.com/google/snappy/blob/main/format_description.txt
@@ -88,14 +88,14 @@ inline fn load32(b: []const u8, i: usize) u32 {
 
 /// Number of leading matching bytes of `a` and `b`, compared 8 bytes at a time,
 /// using `@ctz` on the first differing u64 to find the exact mismatch byte.
-/// Assumes `a_base <= b_base` positions into the same `src` and that neither
+/// Assumes `a_base <= b_base` positions into the same `source` and that neither
 /// read runs off the end (the caller keeps an 8-byte margin). Returns the match
 /// length starting from the current `a`/`b` offsets.
-fn matchLen(src: []const u8, a: usize, b: usize, limit: usize) usize {
+fn matchLen(source: []const u8, a: usize, b: usize, limit: usize) usize {
     var p = a;
     var q = b;
     while (q + 8 <= limit) {
-        const x = load64(src, p) ^ load64(src, q);
+        const x = load64(source, p) ^ load64(source, q);
         if (x != 0) {
             // First differing byte = number of trailing zero bits / 8.
             return p - a + (@ctz(x) >> 3);
@@ -107,64 +107,68 @@ fn matchLen(src: []const u8, a: usize, b: usize, limit: usize) usize {
         p += 1;
         q += 1;
     }) {
-        if (src[p] != src[q]) return p - a;
+        if (source[p] != source[q]) return p - a;
     }
     return p - a;
 }
 
-/// Compress `src` into `out` as a raw snappy block (varint uncompressed length
+/// Compress `source` into `target` as a raw snappy block (varint uncompressed length
 /// + tag stream). Returns bytes written, or `error.BufferTooSmall`. Zero heap
 /// allocation. The block is at most 64 KiB; larger inputs are split by the
 /// caller's framing layer.
 ///
-/// For `src.len < min_non_literal_block_size` the block is a single literal —
+/// For `source.len < min_non_literal_block_size` the block is a single literal —
 /// the hash table can't help. Otherwise the match finder runs; if it can't beat
 /// the bail threshold the whole block is emitted as one literal (snappy never
 /// expands past its bound).
-pub fn compressBlock(src: []const u8, out: []u8) error{BufferTooSmall}!usize {
+pub fn compressBlock(source: []const u8, target: []u8) error{BufferTooSmall}!usize {
     // Positions are stored as u16, so a raw block is at most 64 KiB.
     // Callers must respect it.
-    assert(src.len <= max_block_size);
+    assert(source.len <= max_block_size);
 
     // The varint length prefix.
-    const d = writeUvarint(out, src.len) catch return error.BufferTooSmall;
+    const d = writeUvarint(target, source.len) catch return error.BufferTooSmall;
 
-    if (src.len < min_non_literal_block_size) {
-        return d + try emitLiteral(out[d..], src);
+    if (source.len < min_non_literal_block_size) {
+        return d + try emitLiteral(target[d..], source);
     }
 
-    const n = encodeBlock(out[d..], src) catch return error.BufferTooSmall;
+    const n = encodeBlock(source, target[d..]) catch return error.BufferTooSmall;
     if (n == 0) {
         // Not compressible within the bail threshold: emit the whole input as
         // one literal. Re-check the bound since emitLiteral may need more room
         // than the match finder's partial output did.
-        return d + try emitLiteral(out[d..], src);
+        return d + try emitLiteral(target[d..], source);
     }
     return d + n;
 }
 
 /// Core match-finding encoder. Writes the tag stream (no varint prefix) into
-/// `dst` and returns the byte count, or 0 if the result would exceed the bail
-/// threshold (caller emits a single literal instead). `dst` must be at least
-/// `maxCompressedLength(src.len) - uvarintSize(src.len)` bytes.
-fn encodeBlock(dst: []u8, src: []const u8) error{BufferTooSmall}!usize {
+/// `target` and returns the byte count, or 0 if the result would exceed the bail
+/// threshold (caller emits a single literal instead). `target` must be at least
+/// `maxCompressedLength(source.len) - uvarintSize(source.len)` bytes.
+fn encodeBlock(source: []const u8, target: []u8) error{BufferTooSmall}!usize {
+    // compressBlock gates on min_non_literal_block_size (32), which exceeds
+    // input_margin, so the 8-byte fast paths below stay in bounds.
+    assert(source.len >= input_margin);
+
     var table: [table_size]u16 = @splat(0);
 
     // Stop match-finding this far from the end so the 8-byte literal/copy fast
     // paths stay in bounds.
-    const s_limit: usize = src.len - input_margin;
+    const s_limit: usize = source.len - input_margin;
     // Bail threshold: if the encoded form exceeds this, give up and emit a
-    // literal. `src - src>>5 - 5` is the reference's "must compress to at least
+    // literal. `source - source>>5 - 5` is the reference's "must compress to at least
     // this" bound — it leaves headroom for the literal fallback to fit.
-    const dst_limit: usize = src.len - (src.len >> 5) - 5;
+    const target_limit: usize = source.len - (source.len >> 5) - 5;
 
     var d: usize = 0;
     var next_emit: usize = 0;
     // The stream cannot start with a copy, so begin scanning one byte in.
     var s: usize = 1;
-    var cv = load64(src, s);
+    var cv = load64(source, s);
     // Last copy offset, used for the repeat-offset check. Initialized so the
-    // first check (against src[1-repeat]) reads src[0], which is harmless.
+    // first check (against source[1-repeat]) reads source[0], which is harmless.
     var repeat: usize = 1;
 
     outer: while (true) {
@@ -187,22 +191,23 @@ fn encodeBlock(dst: []u8, src: []const u8) error{BufferTooSmall}!usize {
             // 4 bytes at the last copy's offset. This catches RLE-style input
             // (e.g. runs of the same record) without a fresh hash lookup.
             const check_rep: usize = 1;
-            if (load32(src, s - repeat + check_rep) == @as(u32, @truncate(cv >> (check_rep * 8)))) {
+            const repeated: u32 = @truncate(cv >> (check_rep * 8));
+            if (load32(source, s - repeat + check_rep) == repeated) {
                 var base = s + check_rep;
                 // Extend the match backwards over any already-emitted bytes.
                 while (base > next_emit and base - repeat > 0 and
-                    src[base - repeat - 1] == src[base - 1])
+                    source[base - repeat - 1] == source[base - 1])
                 {
                     base -= 1;
                 }
-                if (d + (base - next_emit) > dst_limit) return 0;
-                d += try emitLiteral(dst[d..], src[next_emit..base]);
+                if (d + (base - next_emit) > target_limit) return 0;
+                d += try emitLiteral(target[d..], source[next_emit..base]);
 
                 // Extend forwards.
                 var cand = s - repeat + 4 + check_rep;
                 s += 4 + check_rep;
                 while (s <= s_limit) {
-                    const diff = load64(src, s) ^ load64(src, cand);
+                    const diff = load64(source, s) ^ load64(source, cand);
                     if (diff != 0) {
                         s += @ctz(diff) >> 3;
                         break;
@@ -210,39 +215,39 @@ fn encodeBlock(dst: []u8, src: []const u8) error{BufferTooSmall}!usize {
                     s += 8;
                     cand += 8;
                 }
-                if (d + emitCopySize(repeat, s - base) > dst.len) return error.BufferTooSmall;
-                d += emitCopy(dst[d..], repeat, s - base);
+                if (d + emitCopySize(repeat, s - base) > target.len) return error.BufferTooSmall;
+                d += emitCopy(target[d..], repeat, s - base);
                 next_emit = s;
                 if (s >= s_limit) break :outer;
-                cv = load64(src, s);
+                cv = load64(source, s);
                 continue :scan;
             }
 
-            if (load32(src, candidate) == @as(u32, @truncate(cv))) break :scan;
+            if (load32(source, candidate) == @as(u32, @truncate(cv))) break :scan;
             candidate = table[h2];
-            if (load32(src, candidate2) == @as(u32, @truncate(cv >> 8))) {
+            if (load32(source, candidate2) == @as(u32, @truncate(cv >> 8))) {
                 table[h2] = @intCast(s + 2);
                 candidate = candidate2;
                 s += 1;
                 break :scan;
             }
             table[h2] = @intCast(s + 2);
-            if (load32(src, candidate) == @as(u32, @truncate(cv >> 16))) {
+            if (load32(source, candidate) == @as(u32, @truncate(cv >> 16))) {
                 s += 2;
                 break :scan;
             }
 
-            cv = load64(src, next_s);
+            cv = load64(source, next_s);
             s = next_s;
         }
 
         // Extend a found 4-byte match backwards over emitted literals.
-        while (candidate > 0 and s > next_emit and src[candidate - 1] == src[s - 1]) {
+        while (candidate > 0 and s > next_emit and source[candidate - 1] == source[s - 1]) {
             candidate -= 1;
             s -= 1;
         }
-        if (d + (s - next_emit) > dst_limit) return 0;
-        d += try emitLiteral(dst[d..], src[next_emit..s]);
+        if (d + (s - next_emit) > target_limit) return 0;
+        d += try emitLiteral(target[d..], source[next_emit..s]);
 
         // Emit copies for as long as a match starts right where the last one
         // ended (the "emitCopy then re-check immediately" inner loop).
@@ -253,8 +258,8 @@ fn encodeBlock(dst: []u8, src: []const u8) error{BufferTooSmall}!usize {
             // Extend the 4-byte match forward 8 bytes at a time.
             s += 4;
             candidate += 4;
-            while (s + 8 <= src.len) {
-                const diff = load64(src, s) ^ load64(src, candidate);
+            while (s + 8 <= source.len) {
+                const diff = load64(source, s) ^ load64(source, candidate);
                 if (diff != 0) {
                     s += @ctz(diff) >> 3;
                     break;
@@ -264,26 +269,26 @@ fn encodeBlock(dst: []u8, src: []const u8) error{BufferTooSmall}!usize {
             }
             // Clamp to the input end: the 8-byte loop may have run to the very
             // end without a mismatch (a match that consumes the tail).
-            if (s > src.len) s = src.len;
+            if (s > source.len) s = source.len;
 
-            if (d + emitCopySize(repeat, s - base) > dst.len) return error.BufferTooSmall;
-            d += emitCopy(dst[d..], repeat, s - base);
+            if (d + emitCopySize(repeat, s - base) > target.len) return error.BufferTooSmall;
+            d += emitCopy(target[d..], repeat, s - base);
 
             next_emit = s;
             if (s >= s_limit) break :outer;
-            if (d > dst_limit) return 0;
+            if (d > target_limit) return 0;
 
             // Re-check for a match at the new cursor using the bytes just before
             // it (s-2), updating two table slots. This catches repeated patterns
             // without reloading cv from scratch.
-            const x = load64(src, s - 2);
+            const x = load64(source, s - 2);
             const m2_hash = hash6(x);
             const curr_hash = hash6(x >> 16);
             candidate = table[curr_hash];
             table[m2_hash] = @intCast(s - 2);
             table[curr_hash] = @intCast(s);
-            if (load32(src, candidate) != @as(u32, @truncate(x >> 16))) {
-                cv = load64(src, s + 1);
+            if (load32(source, candidate) != @as(u32, @truncate(x >> 16))) {
+                cv = load64(source, s + 1);
                 s += 1;
                 break;
             }
@@ -291,58 +296,58 @@ fn encodeBlock(dst: []u8, src: []const u8) error{BufferTooSmall}!usize {
     }
 
     // Emit the trailing bytes as a literal.
-    if (next_emit < src.len) {
-        if (d + (src.len - next_emit) > dst_limit) return 0;
-        d += try emitLiteral(dst[d..], src[next_emit..]);
+    if (next_emit < source.len) {
+        if (d + (source.len - next_emit) > target_limit) return 0;
+        d += try emitLiteral(target[d..], source[next_emit..]);
     }
     return d;
 }
 
-/// Write a literal tag + the literal bytes into `dst`. Returns bytes written.
-/// `error.BufferTooSmall` when `dst` cannot hold the encoding.
-fn emitLiteral(dst: []u8, lit: []const u8) error{BufferTooSmall}!usize {
-    if (lit.len == 0) return 0;
-    const n = lit.len - 1;
+/// Write a literal tag + the literal bytes into `target`. Returns bytes written.
+/// `error.BufferTooSmall` when `target` cannot hold the encoding.
+fn emitLiteral(target: []u8, literal: []const u8) error{BufferTooSmall}!usize {
+    if (literal.len == 0) return 0;
+    const n = literal.len - 1;
     var i: usize = 0;
     if (n < 60) {
-        if (dst.len < 1 + lit.len) return error.BufferTooSmall;
-        dst[0] = @as(u8, @intCast(n)) << 2;
+        if (target.len < 1 + literal.len) return error.BufferTooSmall;
+        target[0] = @as(u8, @intCast(n)) << 2;
         i = 1;
     } else if (n < 256) {
-        if (dst.len < 2 + lit.len) return error.BufferTooSmall;
-        dst[0] = 60 << 2;
-        dst[1] = @intCast(n);
+        if (target.len < 2 + literal.len) return error.BufferTooSmall;
+        target[0] = 60 << 2;
+        target[1] = @intCast(n);
         i = 2;
     } else if (n < 65536) {
-        if (dst.len < 3 + lit.len) return error.BufferTooSmall;
-        dst[0] = 61 << 2;
-        dst[1] = @truncate(@as(u32, @intCast(n)));
-        dst[2] = @truncate(@as(u32, @intCast(n)) >> 8);
+        if (target.len < 3 + literal.len) return error.BufferTooSmall;
+        target[0] = 61 << 2;
+        target[1] = @truncate(@as(u32, @intCast(n)));
+        target[2] = @truncate(@as(u32, @intCast(n)) >> 8);
         i = 3;
     } else if (n < 16777216) {
-        if (dst.len < 4 + lit.len) return error.BufferTooSmall;
-        dst[0] = 62 << 2;
+        if (target.len < 4 + literal.len) return error.BufferTooSmall;
+        target[0] = 62 << 2;
         const v: u32 = @intCast(n);
-        dst[1] = @truncate(v);
-        dst[2] = @truncate(v >> 8);
-        dst[3] = @truncate(v >> 16);
+        target[1] = @truncate(v);
+        target[2] = @truncate(v >> 8);
+        target[3] = @truncate(v >> 16);
         i = 4;
     } else {
-        if (dst.len < 5 + lit.len) return error.BufferTooSmall;
-        dst[0] = 63 << 2;
+        if (target.len < 5 + literal.len) return error.BufferTooSmall;
+        target[0] = 63 << 2;
         const v: u32 = @intCast(n);
-        dst[1] = @truncate(v);
-        dst[2] = @truncate(v >> 8);
-        dst[3] = @truncate(v >> 16);
-        dst[4] = @truncate(v >> 24);
+        target[1] = @truncate(v);
+        target[2] = @truncate(v >> 8);
+        target[3] = @truncate(v >> 16);
+        target[4] = @truncate(v >> 24);
         i = 5;
     }
-    fastmem.copy(u8, dst[i..][0..lit.len], lit);
-    return i + lit.len;
+    fastmem.copy(u8, target[i..][0..literal.len], literal);
+    return i + literal.len;
 }
 
 /// Upper bound on the bytes `emitCopy` will write for one (offset, length)
-/// copy, so the caller can bounds-check `dst` before emitting. A copy is at
+/// copy, so the caller can bounds-check `target` before emitting. A copy is at
 /// most 5 bytes (copy-4) per 64-byte chunk for large offsets, or 3 bytes
 /// (copy-2) per 60-byte chunk for smaller offsets, plus a final chunk (<= 5).
 fn emitCopySize(offset: usize, length: usize) usize {
@@ -354,26 +359,26 @@ fn emitCopySize(offset: usize, length: usize) usize {
     return 3 * ((length + 59) / 60);
 }
 
-/// Write a copy tag for (offset, length) into `dst`. Returns bytes written.
-/// Assumes `dst` is large enough (check via `emitCopySize` first). Splits long
+/// Write a copy tag for (offset, length) into `target`. Returns bytes written.
+/// Assumes `target` is large enough (check via `emitCopySize` first). Splits long
 /// copies into chunks: copy-4 (5 bytes, 64-byte chunks) for offsets >= 65536,
 /// and copy-2 (3 bytes, 60-byte chunks) for smaller offsets. The 60-byte chunk
 /// size (not 64) is deliberate — it guarantees the final remainder is >= 4, so
 /// the last chunk can always use a copy-1 (length 4..11) or copy-2.
-fn emitCopy(dst: []u8, offset: usize, length_in: usize) usize {
-    var length = length_in;
+fn emitCopy(target: []u8, offset: usize, match_len: usize) usize {
+    var length = match_len;
     var i: usize = 0;
 
     if (offset >= 65536) {
         // 4-byte offset: chew through 64-byte chunks, then a final copy-4.
         while (length > 64) {
-            dst[i] = 63 << 2 | 0b11; // length 64
-            writeInt(u32, dst[i + 1 ..][0..4], @intCast(offset));
+            target[i] = 63 << 2 | 0b11; // length 64
+            writeInt(u32, target[i + 1 ..][0..4], @intCast(offset));
             i += 5;
             length -= 64;
         }
-        dst[i] = @as(u8, @intCast(length - 1)) << 2 | 0b11;
-        writeInt(u32, dst[i + 1 ..][0..4], @intCast(offset));
+        target[i] = @as(u8, @intCast(length - 1)) << 2 | 0b11;
+        writeInt(u32, target[i + 1 ..][0..4], @intCast(offset));
         return i + 5;
     }
 
@@ -381,29 +386,25 @@ fn emitCopy(dst: []u8, offset: usize, length_in: usize) usize {
     // is <= 64 (and, because we used 60 not 64, >= 4 when we entered this
     // branch with length > 64).
     while (length > 64) {
-        dst[i] = 59 << 2 | 0b10; // length 60
-        dst[i + 1] = @truncate(@as(u32, @intCast(offset)));
-        dst[i + 2] = @truncate(@as(u32, @intCast(offset)) >> 8);
+        target[i] = 59 << 2 | 0b10; // length 60
+        target[i + 1] = @truncate(@as(u32, @intCast(offset)));
+        target[i + 2] = @truncate(@as(u32, @intCast(offset)) >> 8);
         i += 3;
         length -= 60;
     }
 
     if (length >= 12 or offset >= 2048) {
-        dst[i] = @as(u8, @intCast(length - 1)) << 2 | 0b10;
-        dst[i + 1] = @truncate(@as(u32, @intCast(offset)));
-        dst[i + 2] = @truncate(@as(u32, @intCast(offset)) >> 8);
+        target[i] = @as(u8, @intCast(length - 1)) << 2 | 0b10;
+        target[i + 1] = @truncate(@as(u32, @intCast(offset)));
+        target[i + 2] = @truncate(@as(u32, @intCast(offset)) >> 8);
         return i + 3;
     }
     // 1-byte offset copy: length 4..11, offset < 2048.
-    dst[i] = @as(u8, @intCast(offset >> 8)) << 5 |
+    target[i] = @as(u8, @intCast(offset >> 8)) << 5 |
         @as(u8, @intCast(length - 4)) << 2 | 0b01;
-    dst[i + 1] = @truncate(@as(u32, @intCast(offset)));
+    target[i + 1] = @truncate(@as(u32, @intCast(offset)));
     return i + 2;
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 fn roundTrip(input: []const u8) !void {
     const bound = maxCompressedLength(input.len);
