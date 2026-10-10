@@ -46,6 +46,7 @@ const fastmem = @import("fastmem");
 
 const bits = @import("bits.zig");
 const golden = @import("golden.zig");
+const sequences = @import("sequences.zig");
 
 /// Everything the FSE layer reports.
 pub const Error = error{
@@ -513,20 +514,22 @@ test "buildTable reproduces Appendix A's three predefined tables" {
     // examples to crosscheck that an implementation has built its decoding
     // tables correctly." Each table's first data row is the all-zero state-0
     // duplicate (errata 6441, docs/research/zstd-notes.md §4 T2); the real
-    // state-0 row is the second.
+    // state-0 row is the second. The input is the sequences layer's
+    // Predefined_Mode distributions (`sequences.zig`, `§3.1.1.3.2.2`), so the
+    // production data is what the spec's own tables pin.
     const cases = .{
         .{
-            .counts = &golden.literals_length_distribution,
+            .counts = &sequences.literals_length_distribution,
             .log = 6,
             .rows = &golden.literals_length_table,
         },
         .{
-            .counts = &golden.match_length_distribution,
+            .counts = &sequences.match_length_distribution,
             .log = 6,
             .rows = &golden.match_length_table,
         },
         .{
-            .counts = &golden.offset_distribution,
+            .counts = &sequences.offset_distribution,
             .log = 5,
             .rows = &golden.offset_table,
         },

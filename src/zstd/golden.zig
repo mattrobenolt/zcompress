@@ -5,13 +5,11 @@
 //!
 //! Provenance, so every fixture can be re-derived:
 //!
-//! - **The predefined distributions** are `§3.1.1.3.2.2`'s
-//!   `literalsLength_defaultDistribution`, `matchLengths_defaultDistribution`,
-//!   and `offsetCodes_defaultDistribution`, transcribed verbatim. They are
-//!   the sequences layer's Predefined-mode input *and* the input the
-//!   Appendix A cross-check builds from — when `sequences.zig` lands it
-//!   should own them and this module's test should read them from there,
-//!   so the production data lives in production code.
+//! - **The predefined distributions** (`§3.1.1.3.2.2`'s three
+//!   `*_defaultDistribution` arrays) live where they are used:
+//!   `sequences.zig`, whose Predefined_Mode builds its tables from them and
+//!   whose tests cross-check them against the Appendix A rows below (the
+//!   slice-1 note's direction — production data in production code).
 //! - **The Appendix A tables** are the spec's A.1, A.2, and A.3 rows, minus
 //!   each table's first data row — errata 6441's all-zero state-0 duplicate
 //!   (`docs/research/zstd-notes.md` §4 T2). 64 + 64 + 32 real rows.
@@ -50,6 +48,10 @@
 //!   around the real FSE-compressed weight series above (its streams decode
 //!   ten `0x62` symbols through `§4.2.1.3`'s assignment), verified the same
 //!   way.
+//! - **The `sequences_*` fixtures** are real `zstd` v1.5.7 frames' sequences
+//!   sections and their literals sections, with the CLI's own `zstd -d`
+//!   output as the expected block bytes (`sequences.zig`'s tests compose the
+//!   two landed layers over them).
 //!
 //! Format: docs/research/specs/rfc8878-zstd.txt
 
@@ -98,23 +100,6 @@ pub const t1_literals_section: [9]u8 = [3]u8{ 0x42, 0x80, 0x01 } ++ t1_tree ++ t
 pub const t1_errata_literals_section: [9]u8 =
     [3]u8{ 0x42, 0x80, 0x01 } ++ t1_tree ++ t1_errata_stream;
 
-pub const literals_length_distribution = [_]i16{
-    4, 3, 2, 2, 2, 2, 2, 2, 2,  2,  2,  2,
-    2, 1, 1, 1, 2, 2, 2, 2, 2,  2,  2,  2,
-    2, 3, 2, 1, 1, 1, 1, 1, -1, -1, -1, -1,
-};
-pub const match_length_distribution = [_]i16{
-    1,  4,  3,  2,  2,  2, 2, 2, 2, 1, 1,  1,
-    1,  1,  1,  1,  1,  1, 1, 1, 1, 1, 1,  1,
-    1,  1,  1,  1,  1,  1, 1, 1, 1, 1, 1,  1,
-    1,  1,  1,  1,  1,  1, 1, 1, 1, 1, -1, -1,
-    -1, -1, -1, -1, -1,
-};
-pub const offset_distribution = [_]i16{
-    1,  1,  1,  1,  1,  1, 2, 2, 2, 1, 1, 1,
-    1,  1,  1,  1,  1,  1, 1, 1, 1, 1, 1, 1,
-    -1, -1, -1, -1, -1,
-};
 pub const literals_length_table = [_]TableRow{
     .{ .symbol = 0, .num_bits = 4, .baseline = 0 },
     .{ .symbol = 0, .num_bits = 4, .baseline = 16 },
@@ -407,3 +392,83 @@ pub const weights_expected = [_]u8{
     4, 3, 1, 3, 3, 0, 3, 3, 3, 0, 0, 0,
     0, 1,
 };
+
+/// The sequences sections of four real `zstd` v1.5.7 frames, each the first
+/// (and only) compressed block of its frame, so the CLI's own `zstd -d`
+/// output is exactly the block's output. The corpora are the literals
+/// slice's synthetic shape (short words, a low-entropy byte mix), the level
+/// is the CLI's, and the fixture bytes are the record: `_literals` is the
+/// block's literals section (`§3.1.1.3.1`), `_section` its sequences section
+/// (`§3.1.1.3.2`), `_expected` the block's decoded output. Between them the
+/// four cover all four Symbol_Compression_Modes across the three alphabets
+/// (Repeat is the sequences layer's hand-built pair, `src/zstd/sequences.zig`).
+///
+/// A `zstd -5` frame of a 77-byte words corpus: a Literals_Block_Type 0
+/// literals section (Size_Format 1, rs = 43) and 6 sequences, all three
+/// alphabets Predefined; the output is 77 bytes.
+pub const sequences_predefined_literals = hex(
+    "b402746865206c69746572616c20646f67206d617463686a756d70736f766572" ++
+        "6666736574666f78206c617a79",
+);
+pub const sequences_predefined_section = hex(
+    "06004a098d92e92802374fc7ecf3b52401",
+);
+pub const sequences_predefined_expected = hex(
+    "746865206c69746572616c2074686520646f67206d6174636820746865206a75" ++
+        "6d707320646f67206c69746572616c206f766572206f766572206f6666736574" ++
+        "2074686520666f78206c617a79",
+);
+
+/// A `zstd -3` frame of a 120-byte mix corpus: a Literals_Block_Type 2
+/// literals section (Size_Format 0, rs = 104, cs = 49) and 4 sequences
+/// (LL Predefined, OF Predefined, ML RLE); the output is 120 bytes.
+pub const sequences_rle_match_lengths_literals = hex(
+    "82460c09e0e952eeb41f003002931e7ac705b774efa78121f4ca66e061a5c76e" ++
+        "f16a2b05029cc16c798adb9aa411a41138dcb804",
+);
+pub const sequences_rle_match_lengths_section = hex(
+    "04040158614e99210464d903",
+);
+pub const sequences_rle_match_lengths_expected = hex(
+    "6166676666676164636165686163626168616161686666666762676464616666" ++
+        "6167656764676361636162626868686264646566666867666264646564626268" ++
+        "6761646763646168676866646265626168616364636168616464686468646262" ++
+        "646667656667656462626668666264646468636464626266",
+);
+
+/// A `zstd -5` frame of an 82-byte words corpus: a Literals_Block_Type 0
+/// literals section (Size_Format 1, rs = 49) and 6 sequences
+/// (LL Predefined, OF FSE_Compressed, ML Predefined); the output is 82 bytes.
+pub const sequences_fse_offsets_literals = hex(
+    "14036c69746572616c206c617a7920746865207a7374646f66667365746a756d" ++
+        "70732077696e646f776d61746368206f766572",
+);
+pub const sequences_fse_offsets_section = hex(
+    "062010661f000124416a3902f096316826",
+);
+pub const sequences_fse_offsets_expected = hex(
+    "6c69746572616c206c617a7920746865207a737464206c617a79206f66667365" ++
+        "7420746865206c617a79206a756d70732077696e646f7720746865206f666673" ++
+        "6574206c617a79206d61746368206f766572",
+);
+
+/// A `zstd -5` frame of a 185-byte words corpus: a Literals_Block_Type 2
+/// literals section (Size_Format 0, rs = 72, cs = 62) and 19 sequences, all
+/// three alphabets FSE_Compressed; the output is 185 bytes.
+pub const sequences_fse_all_literals = hex(
+    "82840f1490c70d6cd92ea945e8f1c6efdae6ffff9fcf7fe59d5cca266a32959c" ++
+        "a65f6cf98087a9bbb4ab353921269c34bf1bec81dc1bc483256f4bf4b46bdb05" ++
+        "04",
+);
+pub const sequences_fse_all_section = hex(
+    "13a870334b4b6b0f1044a5f5104086591c3771941ce0d336ec19a7fe6c628af5" ++
+        "e54c04a5acad8648e8585306",
+);
+pub const sequences_fse_all_expected = hex(
+    "62726f776e2077696e646f7720646f67206c617a79206c617a79206d61746368" ++
+        "207a7374642062726f776e206a756d7073206a756d70732077696e646f772065" ++
+        "6e74726f707920717569636b20666f78207468652062726f776e2062726f776e" ++
+        "206c617a792062726f776e20646f67207468652073657175656e636520666f78" ++
+        "20746865207a7374642073657175656e6365207a737464206a756d7073207468" ++
+        "6520646f67206d617463682077696e646f77206f6666736574",
+);
