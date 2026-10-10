@@ -41,6 +41,12 @@
               uv
               goperf
               pv
+              # The bench/ fleet harness (bench/README.md): opentofu reads the
+              # shared fleet stack's outputs; go builds the klauspost competitor
+              # driver; cmake configures the zlib-ng competitor build.
+              opentofu
+              go
+              cmake
             ];
             env = {
               UV_PYTHON = "${pkgs.python314}/bin/python3";

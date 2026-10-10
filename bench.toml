@@ -1,0 +1,77 @@
+# zcompress fleet configuration (bench/README.md).
+#
+# The fleet shares the fastmem-bench infrastructure: the IAM user, the
+# launch templates, and the reaper of ~/code/fastmem-zig/infra (the account
+# predates this repo's own stack; creating a zcompress-bench IAM user needs
+# the human bootstrap procedure in fastmem's infra/README.md with the
+# playground-ops SSO profile). project.name therefore stays "fastmem-bench":
+# the IAM policy pins the Project tag value. Boxes launched by this repo are
+# tagged Target=<name> like fastmem's; check `bench ls` before concurrent
+# use. tofu_dir points at the fastmem base stack read-only (the harness only
+# runs `tofu output` against it).
+[project]
+name = "fastmem-bench"
+region = "us-west-2"
+profile = "fastmem-bench"
+adapter = "zcompress_bench"
+remote_dir = "/root/bench"
+image_version = "1"
+tofu_dir = "/Users/matt/code/fastmem-zig/infra/base"
+key_output = "key_file"
+templates_output = "launch_template_ids"
+ssh_user = "root"
+results_dir = "bench-results"
+cache_dir = ".bench-cache"
+# Fractional minimum effect for significance marks.
+minimum_effect = 0.0
+
+[fleet]
+default_ttl = "2h"
+max_ttl = "12h"
+default_owner = "agent"
+
+# zig_target/zig_cpu drive the zc arm's `zig build fleet-bench` and the
+# zig-cc cross builds of the C arms (static musl binaries; the boxes need
+# nothing but the uploaded files). The klauspost arm cross-builds with Go
+# per arch.
+[targets.c7i]
+instance_type = "c7i.xlarge"
+arch = "x86_64"
+zig_target = "x86_64-linux-musl"
+zig_cpu = "sapphirerapids"
+
+[targets.c8i]
+instance_type = "c8i.xlarge"
+arch = "x86_64"
+zig_target = "x86_64-linux-musl"
+zig_cpu = "graniterapids"
+
+[targets.c7a]
+instance_type = "c7a.xlarge"
+arch = "x86_64"
+zig_target = "x86_64-linux-musl"
+zig_cpu = "znver4"
+
+[targets.c8a]
+instance_type = "c8a.xlarge"
+arch = "x86_64"
+zig_target = "x86_64-linux-musl"
+zig_cpu = "znver5"
+
+[targets.c7g]
+instance_type = "c7g.xlarge"
+arch = "arm64"
+zig_target = "aarch64-linux-musl"
+zig_cpu = "neoverse_v1"
+
+[targets.c8g]
+instance_type = "c8g.xlarge"
+arch = "arm64"
+zig_target = "aarch64-linux-musl"
+zig_cpu = "neoverse_v2"
+
+[targets.c9g]
+instance_type = "c9g.xlarge"
+arch = "arm64"
+zig_target = "aarch64-linux-musl"
+zig_cpu = "neoverse_v3"

@@ -258,6 +258,60 @@ pub fn build(b: *Build) void {
     const check_step = b.step("check", "Compile the tests without running (cross-target gate)");
     check_step.dependOn(&zcompress_tests.step);
 
+    // The fleet benchmark driver (bench/README.md): one binary carrying the
+    // zcompress one-shot rows and the std.compress.flate competitor rows,
+    // cross-built per fleet target by the bench/ harness and uploaded to the
+    // boxes. `-Drev` stamps the measured revision into the meta record.
+    const rev =
+        b.option([]const u8, "rev", "Revision label for the fleet bench driver") orelse "dev";
+    const fleet_options = b.addOptions();
+    fleet_options.addOption([]const u8, "rev", rev);
+    const fleet_bench_mod = b.createModule(.{
+        .root_source_file = b.path("bench/zig/bench_zcompress.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zcompress", .module = zcompress_mod },
+            .{ .name = "fastmem", .module = fastmem_mod },
+        },
+    });
+    fleet_bench_mod.addOptions("build_options", fleet_options);
+    const fleet_bench = b.addExecutable(.{
+        .name = "bench-zcompress",
+        .root_module = fleet_bench_mod,
+    });
+    const install_fleet_bench = b.addInstallArtifact(fleet_bench, .{});
+    const fleet_bench_step = b.step(
+        "fleet-bench",
+        "Install the fleet benchmark driver (zig-out/bin/bench-zcompress)",
+    );
+    fleet_bench_step.dependOn(&install_fleet_bench.step);
+
+    // The fleet corpus generator (bench/README.md): deterministic,
+    // byte-identical across hosts; writes bench/corpus/ (run from the repo
+    // root): `zig build corpus`.
+    const corpus_mod = b.createModule(.{
+        .root_source_file = b.path("bench/zig/corpus.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zcompress", .module = zcompress_mod },
+            .{ .name = "fastmem", .module = fastmem_mod },
+        },
+    });
+    const corpus_tool = b.addExecutable(.{
+        .name = "corpus",
+        .root_module = corpus_mod,
+    });
+    const run_corpus = b.addRunArtifact(corpus_tool);
+    run_corpus.has_side_effects = true;
+    if (b.args) |args| run_corpus.addArgs(args);
+    const corpus_step = b.step(
+        "corpus",
+        "Regenerate the committed fleet corpus (bench/corpus/)",
+    );
+    corpus_step.dependOn(&run_corpus.step);
+
     // Benchmarks. The benchmark dependency is lazy: b.lazyImport fetches it
     // on the first `zig build bench` and returns null meanwhile, so the
     // codec modules and the test step build without it.

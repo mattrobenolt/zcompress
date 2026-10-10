@@ -85,3 +85,36 @@ example example *args:
 # Clean build artifacts
 clean:
     rm -rf zig-out .zig-cache zig-pkg
+
+# Benchmark fleet: the bench/ harness (bench/README.md). The fleet shares the
+# fastmem-bench IAM user and launch templates (see bench.toml); every fleet
+# command runs as that profile.
+export AWS_PROFILE := env("AWS_PROFILE", "fastmem-bench")
+
+# Run any harness command (e.g. just b ls, just b up c8g --ttl 2h, just b analyze <run-dir>)
+b *ARGS:
+    uv run --project bench bench {{ ARGS }}
+
+# Launch boxes (e.g. just bench-up c8g c7i, or just bench-up for every target)
+bench-up *TARGETS:
+    uv run --project bench bench up {{ if TARGETS == "" { "c7i c8i c7a c8a c7g c8g c9g" } else { TARGETS } }}
+
+# Terminate every box of the fleet
+bench-down:
+    uv run --project bench bench down --all
+
+# Show the fleet
+bench-ls:
+    uv run --project bench bench ls
+
+# Correctness gate on every running box (bench/README.md)
+bench-test *ARGS:
+    uv run --project bench bench test {{ ARGS }}
+
+# Measure on every running box (e.g. just bench-run --up --rounds 5 --label m3)
+bench-run *ARGS:
+    uv run --project bench bench run {{ ARGS }}
+
+# Harness checks: lint, format, types
+bench-check:
+    cd bench && uv run ruff check . && uv run ruff format --check . && uv run ty check
