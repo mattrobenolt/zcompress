@@ -53,6 +53,12 @@ const max_peek_bits: u6 = 16;
 /// fresh output; there is no compressed staging region.
 pub const Buffer = [2 * history_len]u8;
 
+/// The optional checksum hook's type (`Checksum.zig`, README "Checksum
+/// hook"): a container's state plus its byte-fold function, named here so a
+/// container can name it through this namespace (type identity across build
+/// modules) and assign it to `checksum` before the first read.
+pub const Checksum = @import("Checksum.zig").Checksum;
+
 /// The detailed error recorded once `state == .failed` (the interface reports
 /// `error.ReadFailed`): `decode.DecompressError` minus `BufferTooSmall` — the
 /// Reader owns its window, so no decode can outgrow it — plus the contiguity
@@ -184,6 +190,14 @@ const Reader = @This();
 
 reader: Io.Reader,
 bits: Bits,
+/// The container's checksum hook, updated with the bytes that enter the
+/// window (the literal store, the match copy, the stored-block copy). Null —
+/// the raw module's only use — costs one predictable check per window fill
+/// and nothing per byte (README, "Checksum hook"). Set it before the first
+/// read: a hook set mid-stream sees only the bytes decoded after it, and the
+/// container reads its own state at the clean end (this module writes no
+/// trailer and finalizes nothing).
+checksum: ?Checksum = null,
 phase: Phase = .block_header,
 /// `§3.2.3` — "a distance cannot refer past the beginning of the output
 /// stream" is a stream-wide rule, not a window one, so the total decoded
@@ -230,6 +244,16 @@ pub fn init(input: *Io.Reader, buffer: *Buffer) Reader {
 /// caller that needs more either gets them or gets a failure.
 fn fillWindow(r: *Reader) Error!usize {
     var added: usize = 0;
+    // The checksum hook's mark: everything before it is already folded into
+    // the container's state. Bytes enter the window only at `reader.end` (the
+    // literal store, the match copy, the stored-block copy — all inside
+    // `step`), so the pending bytes are one contiguous run at the window's
+    // tail, in stream order. The run is flushed before a slide drops its
+    // head and before this call returns, so the digest is exact whenever the
+    // window is quiescent — in particular at `error.EndOfStream`, where a
+    // container reads it. One hook call per window fill, never one per
+    // symbol (README, "Checksum hook").
+    var hashed_end = r.reader.end;
     while (r.state == .streaming) {
         // Room for the next write: a match may declare up to 258 bytes
         // (`§3.2.5`), so the decoder stops this far short of a full window and
@@ -237,7 +261,10 @@ fn fillWindow(r: *Reader) Error!usize {
         // guaranteed contiguous request at `history_len` bytes: a slide always
         // leaves at least that much free (README, "Streaming").
         if (r.reader.buffer.len - r.reader.end < max_match_len) {
-            if (r.slide() < max_match_len) {
+            r.flushChecksum(&hashed_end);
+            const room = r.slide();
+            hashed_end = r.reader.end;
+            if (room < max_match_len) {
                 // The window cannot take another symbol: the consumer holds
                 // more than it has drained, so a request that needs one fails
                 // closed rather than asserting (README, "Streaming").
@@ -247,8 +274,20 @@ fn fillWindow(r: *Reader) Error!usize {
         }
         added += try r.step();
     }
+    r.flushChecksum(&hashed_end);
     if (added == 0) return error.EndOfStream;
     return added;
+}
+
+/// Hand the bytes decoded since the last flush to the checksum hook: one
+/// contiguous run, in stream order, each byte exactly once. A no-op when the
+/// hook is unset or the run is empty (the window is quiescent), which is what
+/// keeps the raw module's cost at one check per window fill.
+fn flushChecksum(r: *Reader, hashed_end: *usize) void {
+    const checksum = r.checksum orelse return;
+    if (hashed_end.* == r.reader.end) return;
+    checksum.update(r.reader.buffer[hashed_end.*..r.reader.end]);
+    hashed_end.* = r.reader.end;
 }
 
 /// Slide the window forward: keep the unconsumed bytes and the retained
@@ -486,6 +525,66 @@ fn roundTrip(source: []const u8) !void {
     try sentinel.expect(target, n);
     // The whole stream is consumed, nothing after it.
     try testing.expectEqual(compressed.written().len, fixed_in.seek);
+}
+
+/// Encode `source`, decode it through a Reader with the checksum hook set,
+/// and prove the hook folded exactly `source` — every byte once, in stream
+/// order — while the decoded bytes and the sentinel rule still hold. The
+/// digest is read after the clean end (`error.EndOfStream`), the point a
+/// container reads it.
+fn roundTripWithChecksum(source: []const u8) !void {
+    const gpa = testing.allocator;
+    var compressed: Io.Writer.Allocating = .init(gpa);
+    defer compressed.deinit();
+    var wbuf: Writer.Buffer = undefined;
+    var w: Writer = .init(&compressed.writer, &wbuf, .{});
+    try w.writer.writeAll(source);
+    try w.finish();
+
+    const target = try gpa.alloc(u8, source.len + sentinel.len);
+    defer gpa.free(target);
+    sentinel.fill(target);
+    var rbuf: Buffer = undefined;
+    var fixed_in: Io.Reader = .fixed(compressed.written());
+    var r: Reader = .init(&fixed_in, &rbuf);
+    var digest: golden.TestChecksum = .{};
+    r.checksum = digest.hook();
+    const n = try decodeInto(&r.reader, target);
+    try testing.expectEqual(source.len, n);
+    try testing.expectEqualSlices(u8, source, target[0..n]);
+    try sentinel.expect(target, n);
+    try testing.expectEqual(compressed.written().len, fixed_in.seek);
+    try testing.expectEqual(golden.TestChecksum.fold(source), digest.value);
+}
+
+test "Reader: the checksum hook folds every decoded byte exactly once, in order" {
+    // README, "Checksum hook": the bytes that enter the window — the literal
+    // store, the match copy, the stored-block copy — are folded as the window
+    // fills, before any slide drops them. The synthetic fold is
+    // order-sensitive: a dropped, doubled, or reordered byte changes the
+    // digest. The sizes span several window fills (64 KiB each); the shapes
+    // cover all three entry paths — text (literals and matches), random
+    // (stored blocks), and a single-byte run (distance-1 overlapping
+    // matches).
+    const gpa = testing.allocator;
+    for ([_]usize{ 0, 1, 1000, 65535, 65536, 200_000 }) |len| {
+        const source = try makeSource(gpa, len);
+        defer gpa.free(source);
+        roundTripWithChecksum(source) catch |err| {
+            print("FAIL: len {d}\n", .{len});
+            return err;
+        };
+    }
+    var rng: DefaultPrng = .init(0xC0FFEE);
+    const random_bytes = try gpa.alloc(u8, 1 << 20);
+    defer gpa.free(random_bytes);
+    for (random_bytes) |*b| b.* = rng.random().int(u8);
+    try roundTripWithChecksum(random_bytes);
+
+    const run = try gpa.alloc(u8, 100_000);
+    defer gpa.free(run);
+    fastmem.set(u8, run, 0x41);
+    try roundTripWithChecksum(run);
 }
 
 /// Corpus source bytes: repetitive text with a rotating tail, so blocks are

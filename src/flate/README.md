@@ -96,6 +96,11 @@ var r: flate.Reader = .init(in, &rbuf);        // rbuf: flate.Reader.Buffer
 // set minus BufferTooSmall — the Reader owns its window — plus StreamTooLong /
 // ReadFailed / EndOfStream) records the specific failure beside the
 // interface's coarse ReadFailed / EndOfStream.
+// Both streaming layers carry an optional checksum hook, null by default —
+// a container's state and its byte-fold function, updated at the funnels
+// (see "Checksum hook"). The field's type is flate.Writer.Checksum /
+// flate.Reader.Checksum:
+w.checksum = .{ .context = &state, .update_fn = update };
 
 // The one-call conveniences: stack-buffered end-to-end, zero allocation.
 // Writer.streamAll takes options; `.ratio` lands as error.ReadFailed upfront.
@@ -453,13 +458,66 @@ Files (the intended layout; the implementation lanes may split further):
 finder), `decode.zig` (inflate, bit reader, and the canonical Huffman
 table construction shared by both sides), `golden.zig` (ported golden
 fixtures, shared by every layer's tests), `Writer.zig` + `Reader.zig` (the
-streaming `Io` layer), `bench.zig` (local benchmark), `oracle.zig` (the
+streaming `Io` layer), `Checksum.zig` (the container checksum hook's
+interface), `bench.zig` (local benchmark), `oracle.zig` (the
 external-oracle harness behind `just flate-oracle`), `fuzz.zig` (fuzz
 targets).
 
 The example CLI (`examples/flate.zig`, `zig build example-flate -- encode
 README.md > out`) is a thin streaming pump over this surface, the same shape
 as snappy's.
+
+## Checksum hook
+
+A container that wraps deflate with a payload checksum — gzip's CRC-32,
+zlib's Adler-32 (M3) — hashes the bytes where they cross this module's
+boundary: as a block is emitted on encode, as bytes enter the window on
+decode (`src/gzip/README.md`, "Hashing rides the codec boundary"). The
+mechanism is one optional field per streaming layer, `Writer.checksum` and
+`Reader.checksum`, null by default, holding the container's state and its
+byte-fold function:
+
+    context: *anyopaque,                             // the container's state
+    update_fn: *const fn (*anyopaque, []const u8) void
+
+The interface is checksum-agnostic by construction (`Checksum.zig`): this
+module never sees a polynomial or a modulus, it only hands the hook
+contiguous payload runs, in stream order, each byte exactly once. The
+container owns the state, reads its own digest at the clean end, and owns any
+trailer; this module finalizes nothing and writes no trailer. The field's
+type is `flate.Writer.Checksum` / `flate.Reader.Checksum`.
+
+Where it updates:
+
+- **Writer** — `emitBlock`, the single funnel every emitted byte passes
+  through (`drain`, `flush`, `rebase`, and `finish` all call it), hands the
+  hook each block's uncompressed bytes as they are emitted: one run per
+  block, at most `max_block_size`, in stream order.
+- **Reader** — the bytes that enter the window (the literal store, the match
+  copy, the stored-block copy) are handed to the hook as the window fills:
+  one run per fill, flushed before a window slide drops the run's head and
+  before the fill returns, so the digest is exact whenever the window is
+  quiescent — in particular at `error.EndOfStream`, where a container reads
+  it. (A decode that fails closed leaves the digest partial; the container
+  reports the decode failure, never the checksum.)
+
+Set the field before the first byte is written or read; a hook set mid-stream
+sees only what follows it. The one-shot `encode.compress` /
+`decode.decompress` and the `streamAll` conveniences carry no hook: a
+container's one-shot hashes `source` (encode) or the decoded `target`
+(decode) directly, and its one-call pump builds the layer itself.
+
+Cost, stated plainly. Unset — the raw module's only use — the funnels pay a
+predictable null check per emitted block (Writer) and per window fill and
+slide (Reader); never per byte, never per symbol. Set, the container pays one
+indirect call per run (at most `max_block_size` bytes) plus its own byte
+loop. Nothing allocates either way: the state is the container's, and the
+field is two words.
+
+This section is the whole of the raw module's checksum story — a hook and its
+funnel wiring, no checksum implementation, no container surface. The kernels
+and the trailers are the containers' (`src/gzip/README.md`,
+`src/zlib/README.md`), and both ride this hook.
 
 ## Benchmarks
 

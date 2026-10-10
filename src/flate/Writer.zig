@@ -47,6 +47,12 @@ const golden = @import("golden.zig");
 /// — history followed by block — is one contiguous slice.
 pub const Buffer = [max_block_size + history_len]u8;
 
+/// The optional checksum hook's type (`Checksum.zig`, README "Checksum
+/// hook"): a container's state plus its byte-fold function, named here so a
+/// container can name it through this namespace (type identity across build
+/// modules) and assign it to `checksum` before the first write.
+pub const Checksum = @import("Checksum.zig").Checksum;
+
 /// The compressed-output scratch for one block: the exact worst case
 /// (`maxCompressedLength(max_block_size)`), so the encoder cannot run out of
 /// room.
@@ -61,6 +67,14 @@ const Writer = @This();
 writer: Io.Writer,
 output: *Io.Writer,
 options: encode.Options,
+/// The container's checksum hook, updated with each emitted block's
+/// uncompressed bytes (`emitBlock`, the single funnel every emitted byte
+/// passes through). Null — the raw module's only use — costs one predictable
+/// check per emitted block and nothing per byte (README, "Checksum hook").
+/// Set it before the first write: a hook set mid-stream sees only the blocks
+/// emitted after it, and the container reads its own state when the stream
+/// ends (this module writes no trailer and finalizes nothing).
+checksum: ?Checksum = null,
 /// The caller's buffer in full: `buffer[0..block_start]` is the retained
 /// history, `buffer[block_start..]` the accumulating block. The embedded
 /// `Io.Writer`'s own `buffer`/`end` are the block region alone.
@@ -155,6 +169,13 @@ fn emitBlock(w: *Writer, emit_len: usize) Io.Writer.Error!void {
     assert(emit_len <= w.writer.end);
     if (emit_len == 0) return;
     const block_end = w.block_start + emit_len;
+    // The checksum hook (README, "Checksum hook"): this is the single funnel
+    // every emitted byte passes through — `drain`, `flush`, `rebase`, and
+    // `finish` all call it — so the block's uncompressed bytes reach the
+    // container's state here, in stream order, exactly once, before the
+    // encoder and before any slide moves them. Null when unset: one
+    // predictable check per emitted block, nothing per byte.
+    if (w.checksum) |checksum| checksum.update(w.buffer[w.block_start..block_end]);
     var scratch: [scratch_len]u8 = undefined;
     var bw: encode.BitWriter = .{
         .target = &scratch,
@@ -721,6 +742,162 @@ test "Writer: every length and distance code round trips through the stream" {
         fastmem.set(u8, run, 0x7E);
         try roundTrip(run);
     }
+}
+
+test "Writer: the checksum hook folds every emitted byte exactly once, in order" {
+    // README, "Checksum hook": the hook rides `emitBlock`, the single funnel
+    // every emitted byte passes through — `drain`, `flush`, `rebase`, and
+    // `finish` all call it — so the block's uncompressed bytes reach the
+    // container's state in stream order, exactly once. The synthetic fold is
+    // order-sensitive: a dropped, doubled, or reordered byte changes the
+    // digest. The write mix is the random-machinery driver's (multi-slice
+    // splat, direct-slice writes onto a full block, flushes), with the hook
+    // set.
+    const gpa = testing.allocator;
+    var rng: DefaultPrng = .init(0x5EED_1234);
+    const rand = rng.random();
+
+    var iter: usize = 0;
+    while (iter < 40) : (iter += 1) {
+        var out: Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        var expect: std.ArrayList(u8) = .empty;
+        defer expect.deinit(gpa);
+        var buf: Buffer = undefined;
+        var w: Writer = .init(&out.writer, &buf, .{});
+        var digest: golden.TestChecksum = .{};
+        w.checksum = digest.hook();
+
+        var ops: usize = 0;
+        while (ops < 8) : (ops += 1) {
+            var a: [3000]u8 = undefined;
+            var b: [40000]u8 = undefined;
+            var pattern: [7]u8 = undefined;
+            rand.bytes(&a);
+            rand.bytes(&b);
+            rand.bytes(&pattern);
+            const a_len = rand.uintAtMost(usize, a.len);
+            const b_len = rand.uintAtMost(usize, b.len);
+            const p_len = rand.intRangeAtMost(usize, 1, pattern.len);
+            const splat = rand.uintAtMost(usize, 30000);
+            switch (rand.uintLessThan(u8, 4)) {
+                0 => {
+                    var data = [_][]const u8{ a[0..a_len], b[0..b_len], pattern[0..p_len] };
+                    try w.writer.writeSplatAll(&data, splat);
+                    try expect.appendSlice(gpa, a[0..a_len]);
+                    try expect.appendSlice(gpa, b[0..b_len]);
+                    for (0..splat) |_| try expect.appendSlice(gpa, pattern[0..p_len]);
+                },
+                1 => {
+                    // The File.Reader simple-mode path: a direct write into
+                    // the block region, which lands on `rebase` when full.
+                    const dest = try w.writer.writableSliceGreedy(1);
+                    const n = @min(dest.len, b_len);
+                    for (dest[0..n], b[0..n]) |*d, x| d.* = x;
+                    w.writer.advance(n);
+                    try expect.appendSlice(gpa, b[0..n]);
+                },
+                2 => {
+                    try w.writer.writeAll(b[0..b_len]);
+                    try expect.appendSlice(gpa, b[0..b_len]);
+                },
+                else => {
+                    try w.writer.writeByte(pattern[0]);
+                    try expect.append(gpa, pattern[0]);
+                    if (rand.boolean()) try w.writer.flush();
+                },
+            }
+        }
+        try w.finish();
+
+        try testing.expectEqual(golden.TestChecksum.fold(expect.items), digest.value);
+
+        // The hook is observation-only: the stream is the raw module's.
+        const target = try gpa.alloc(u8, expect.items.len + sentinel.len);
+        defer gpa.free(target);
+        sentinel.fill(target);
+        const n = try decode.decompress(out.written(), target);
+        try testing.expectEqual(expect.items.len, n);
+        try testing.expectEqualSlices(u8, expect.items, target[0..n]);
+        try sentinel.expect(target, n);
+    }
+}
+
+test "Writer: the checksum hook folds multi-block streams and changes no byte" {
+    // Sizes around the 65535-byte split (`§3.2.4`), so the fold crosses block
+    // boundaries: `drain` emits whole blocks, `rebase` the front of a partly
+    // written one, `finish` the tail. The fold must follow the emission
+    // order, and the emitted stream must be byte-identical with and without
+    // the hook (the hook is observation-only).
+    const gpa = testing.allocator;
+    const sizes = [_]usize{ 0, 1, 1000, 65535, 65536, 3 * max_block_size + 17 };
+    for (sizes) |len| {
+        const source = try makeShape(gpa, .text, len);
+        defer gpa.free(source);
+
+        var plain: Io.Writer.Allocating = .init(gpa);
+        defer plain.deinit();
+        var buf: Buffer = undefined;
+        var w: Writer = .init(&plain.writer, &buf, .{});
+        try pumpChunked(&w, source);
+
+        var out: Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        var hooked_buf: Buffer = undefined;
+        var w2: Writer = .init(&out.writer, &hooked_buf, .{});
+        var digest: golden.TestChecksum = .{};
+        w2.checksum = digest.hook();
+        try pumpChunked(&w2, source);
+
+        try testing.expectEqual(golden.TestChecksum.fold(source), digest.value);
+        try testing.expectEqualSlices(u8, plain.written(), out.written());
+    }
+}
+
+test "Writer: the checksum hook folds a rebased direct-slice write in order" {
+    // `rebase` (the `writableSliceGreedy` path, README "Streaming") emits the
+    // front of a partly written block and preserves the tail as the block: the
+    // fold must cover the emitted front and the later-emitted tail, once each,
+    // in order.
+    const gpa = testing.allocator;
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var buf: Buffer = undefined;
+    var w: Writer = .init(&out.writer, &buf, .{});
+    var digest: golden.TestChecksum = .{};
+    w.checksum = digest.hook();
+
+    try w.writer.writeAll("a" ** max_block_size);
+    // The direct-slice read: rebase emits the full block region, then hands
+    // the whole of it back.
+    const dest = try w.writer.writableSliceGreedy(1);
+    try testing.expectEqual(max_block_size, dest.len);
+    fastmem.set(u8, dest, 0x62);
+    w.writer.advance(dest.len);
+    try w.writer.writeAll("c" ** 1000);
+    try w.finish();
+
+    var expect: [2 * max_block_size + 1000]u8 = undefined;
+    fastmem.set(u8, expect[0..max_block_size], 0x61);
+    fastmem.set(u8, expect[max_block_size..][0..max_block_size], 0x62);
+    fastmem.set(u8, expect[2 * max_block_size ..], 0x63);
+    try testing.expectEqual(golden.TestChecksum.fold(&expect), digest.value);
+}
+
+/// Write `source` through `w` in 999-byte chunks, flushing every seventh
+/// write, then finish: the split follows the block size, not the write
+/// boundaries (README, "Streaming").
+fn pumpChunked(w: *Writer, source: []const u8) !void {
+    var pos: usize = 0;
+    var writes: usize = 0;
+    while (pos < source.len) {
+        const n = @min(source.len - pos, 999);
+        try w.writer.writeAll(source[pos..][0..n]);
+        pos += n;
+        writes += 1;
+        if (writes % 7 == 0) try w.writer.flush();
+    }
+    try w.finish();
 }
 
 /// Corpus shapes, the same set the encoder and bench use: repetitive text,
