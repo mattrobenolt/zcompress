@@ -34,10 +34,10 @@ const std = @import("std");
 const assert = std.debug.assert;
 const testing = std.testing;
 
+const internal = @import("../internal/root.zig");
 const bits = @import("bits.zig");
 const fse = @import("fse.zig");
 const golden = @import("golden.zig");
-const internal = @import("../internal/root.zig");
 
 /// Everything the Huffman layer reports.
 pub const Error = error{
@@ -148,8 +148,8 @@ fn decodeWeights(
     table: *const fse.Table,
     target: []u8,
 ) Error!usize {
-    var state1 = fse.State.init(reader, table);
-    var state2 = fse.State.init(reader, table);
+    var state1: fse.State = .init(reader, table);
+    var state2: fse.State = .init(reader, table);
     // The reference's post-init check: a stream too short to hold even the
     // two initial states is corruption, not an empty series.
     if (reader.overran()) return error.MalformedHuffmanWeights;
@@ -280,7 +280,7 @@ pub fn buildTable(tree: *const Tree) DecodeTable {
 /// exactly `target.len` symbols, and then the stream must be exactly
 /// consumed.
 pub fn decodeStream(table: *const DecodeTable, source: []const u8, target: []u8) Error!void {
-    var reader = try bits.BackwardReader.init(source);
+    var reader: bits.BackwardReader = try .init(source);
     for (target) |*byte| {
         const cell = table.entries[reader.peekBits(table.max_bits)];
         reader.skipBits(cell.num_bits);
@@ -294,7 +294,7 @@ pub fn decodeStream(table: *const DecodeTable, source: []const u8, target: []u8)
 }
 
 /// The index of the highest set bit; `value` must be nonzero.
-fn highBit(value: u32) u5 {
+inline fn highBit(value: u32) u5 {
     assert(value != 0);
     return @intCast(31 - @clz(value));
 }
@@ -420,7 +420,7 @@ test "decodeWeights stops at the target: a series longer than the alphabet" {
         description.counts[0..description.symbol_count],
         description.accuracy_log,
     );
-    var reader = try bits.BackwardReader.init(series[description.bytes_consumed..]);
+    var reader: bits.BackwardReader = try .init(series[description.bytes_consumed..]);
     var target: [4]u8 = @splat(0);
     try testing.expectError(
         error.MalformedHuffmanWeights,

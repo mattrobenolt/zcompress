@@ -6,21 +6,26 @@
 //!
 //! M4 is decoder-first and lands in slices: the entropy kernels are here
 //! first (`fse.zig`, `huff0.zig`, with `bits.zig` carrying the two
-//! bitstream readers they share), and the public surface — `zstd.decode`
-//! and `zstd.Reader` — arrives with the frame, block, and literals layers
-//! that compose them. Contracts: README.md (the M4 sketch); format:
+//! bitstream readers they share), then the literals section (`literals.zig`)
+//! that composes them, and the public surface — `zstd.decode` and
+//! `zstd.Reader` — arrives with the frame and block layers on top.
+//! Contracts: README.md (the M4 sketch); format:
 //! docs/research/specs/rfc8878-zstd.txt.
 
 const std = @import("std");
 
 const bits = @import("bits.zig");
+const common = @import("common.zig");
 const fse = @import("fse.zig");
 const huff0 = @import("huff0.zig");
+const literals = @import("literals.zig");
 
 test {
     _ = bits;
+    _ = common;
     _ = fse;
     _ = huff0;
+    _ = literals;
     _ = @import("golden.zig");
     std.testing.refAllDecls(@This());
 }
