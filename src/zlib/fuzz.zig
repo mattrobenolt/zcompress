@@ -1268,7 +1268,7 @@ fn fuzzReaderMachinery(_: void, smith: *Smith) anyerror!void {
             },
             .over_end_peek => {
                 // A peek past the contiguity cap with no `left` guard:
-                // mid-member it is the contiguity stop, but at the stream's
+                // mid-stream it is the contiguity stop, but at the stream's
                 // end it routes through `rebase`, where flate's sticky end
                 // fires before the trailer is read — the trailer check must
                 // run there too (the M3 closing review's blocker: a clean

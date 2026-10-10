@@ -148,6 +148,41 @@ an assert; the codecs replace it with a sticky failure.
   (snappy), "a request past the window fails closed with StreamTooLong"
   (flate).
 
+### A wrapper's rebase routes the inner end through the same ending as fill
+
+Contract: a wrapping reader's `rebase` (a container over a codec, a frame over
+a raw stream) inherits the inner reader's sticky `error.EndOfStream` when the
+inner stream ends mid-slide. That end is the wrapper's own clean-end signal:
+whatever step the wrapper's `fill` runs at the inner end — reading and
+checking a trailer, verifying a checksum, consuming to the frame boundary —
+`rebase` must run the same step. The failure mode it prevents: the wrapper
+passes the inner end straight to the consumer, reporting a clean
+`error.EndOfStream` with its own state still `streaming` and its trailer never
+read — the input stops before the frame's end and a caller loop parses the
+trailer as the next frame. The consumer reaches it with ordinary calls: a
+`peek` or `take` larger than the window's room at its position, or a record
+loop with records sized past the remaining tail.
+
+The ending step returns the trailer's own errors (the specific set, not the
+coarse `ReadFailed`); the wrapper's fill lets its `record` funnel own the
+failing, while `rebase` — below the funnel — fails directly, once. A
+`readTrailer` that only ends the stream is `Error!void` in truth: no trailing
+`return error.EndOfStream`, a narrowed error set, and both call sites report
+the clean end themselves.
+
+- Caught: fca3604 (M3's closing review, B1) — the gzip and zlib readers
+  passed flate's sticky end through `rebase` unchecked, so a 30-KiB peek at
+  a member's last 1,000 bytes ended "cleanly" with the trailer unread; a
+  plain 4,096-byte record loop hit it in 1 of 64 member sizes. The fix
+  funnels `rebase`'s inner end through `readTrailer`; the regression tests
+  drive the 39-KiB-take + 30-KiB-peek shape on good and corrupted trailers,
+  and the reader-machinery fuzz targets gained an `over_end_peek` op — every
+  prior op bounded its request by the bytes still to come, which is exactly
+  why the fuzzers never asked past the end. Tests: "an over-the-end request
+  still checks the trailer" (both containers).
+- Applies to: every M4+ frame with a trailer the wrapper must verify — the
+  zstd frame checksum rides this exact shape.
+
 ### Poison checks: finish after failure never reports false success
 
 Contract: a codec's `finish` checks that the interface is still the codec's

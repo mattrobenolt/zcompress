@@ -129,7 +129,9 @@ fn fillStream(r: *Reader) Error!usize {
     r.inner.reader.fillMore() catch |err| switch (err) {
         // flate's clean end: the body is complete, and its bit reader
         // consumed the input exactly through the last byte — the trailer is
-        // next (the exact-consumption contract, OQ2).
+        // next (the exact-consumption contract, OQ2). `record` owns the
+        // failing: the specific trailer error propagates to it, so the
+        // detail lands beside the state, not the coarse error over it.
         error.EndOfStream => {
             try r.readTrailer();
             return error.EndOfStream;
@@ -162,12 +164,11 @@ fn readHeader(r: *Reader) Error!void {
 /// Adler-32 of the decoded bytes, u32 most-significant-byte first (`§2.1`).
 /// Verified exactly once, then the reader is `done` (sticky); a mismatch is
 /// the specific error, a short trailer `Truncated`.
-fn readTrailer(r: *Reader) Error!void {
+fn readTrailer(r: *Reader) error{ Truncated, ReadFailed, WrongChecksum }!void {
     var trailer: [decode.trailer_len]u8 = undefined;
     try decode.readExact(r.input, &trailer);
     try decode.checkTrailer(&trailer, r.checksum.final());
     r.state = .done;
-    return error.EndOfStream;
 }
 
 /// The generated entries' rebase hook: make room for `capacity` more
@@ -185,10 +186,8 @@ fn rebase(r: *Reader, capacity: usize) Io.Reader.RebaseError!void {
         // trailer's first byte (the exact-consumption contract), so the
         // check consumes exactly through the stream's last byte.
         error.EndOfStream => {
-            r.readTrailer() catch |trailer_err| return switch (trailer_err) {
-                error.EndOfStream => error.EndOfStream,
-                else => r.fail(trailer_err),
-            };
+            r.readTrailer() catch |trailer_err| return r.fail(trailer_err);
+            return error.EndOfStream;
         },
         error.ReadFailed => return r.fail(r.inner.err.?),
     };
@@ -498,7 +497,7 @@ test "Reader: an over-the-end request still checks the trailer" {
     // A stream whose decoded size lands the window deep enough that a
     // 30-KiB request overflows the room at the consumer's position.
     const source = "the quick brown fox jumps over the lazy dog. " ** 950;
-    var stream: [encode.maxCompressedLength(43 * 950)]u8 = undefined;
+    var stream: [encode.maxCompressedLength(source.len)]u8 = undefined;
     const len = try encode.compress(source, &stream, .{});
 
     // The good trailer: the over-the-end request reports the clean end
