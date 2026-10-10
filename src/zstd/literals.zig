@@ -56,10 +56,10 @@ const testing = std.testing;
 
 const fastmem = @import("fastmem");
 
-const common = @import("common.zig");
-const huff0 = @import("huff0.zig");
-const golden = @import("golden.zig");
 const internal = @import("../internal/root.zig");
+const golden = @import("golden.zig");
+const huff0 = @import("huff0.zig");
+const readInt = @import("common.zig").readInt;
 
 /// Everything the literals layer reports.
 pub const Error = error{
@@ -392,9 +392,9 @@ fn decodeFourStreams(
     // little-endian fields, describing the compressed sizes of the first 3
     // streams."
     if (streams.len < jump_table_len) return error.LiteralsTooLarge;
-    const stream1_len: usize = common.readInt(u16, streams[0..2]);
-    const stream2_len: usize = common.readInt(u16, streams[2..4]);
-    const stream3_len: usize = common.readInt(u16, streams[4..6]);
+    const stream1_len: usize = readInt(u16, streams[0..2]);
+    const stream2_len: usize = readInt(u16, streams[2..4]);
+    const stream3_len: usize = readInt(u16, streams[4..6]);
     const streams_len = streams.len - jump_table_len;
     // "Note that if Stream1_Size + Stream2_Size + Stream3_Size exceeds
     // Total_Streams_Size, the data are considered corrupted."

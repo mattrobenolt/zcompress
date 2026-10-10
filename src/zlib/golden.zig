@@ -33,14 +33,14 @@
 const std = @import("std");
 const testing = std.testing;
 const assert = std.debug.assert;
+const print = std.debug.print;
 
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
-const common = @import("common.zig");
-const readInt = common.readInt;
 const adler32 = @import("adler32.zig");
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
+const readInt = @import("common.zig").readInt;
 
 /// Comptime hex decoding, so the ported vectors keep golang/go's own
 /// hexstring spelling instead of a byte-list transcription.
@@ -344,7 +344,7 @@ test "golden decode: golang/go zlibTests" {
             else => window.len,
         };
         checkOneShot(window, cap, tc.source, tc.expect) catch |err| {
-            std.debug.print("\nFAIL ({s}): {s}\n", .{ tc.desc, @errorName(err) });
+            print("\nFAIL ({s}): {s}\n", .{ tc.desc, @errorName(err) });
             return err;
         };
     }
@@ -362,7 +362,7 @@ test "golden decode: the std in-tree streams" {
             else => window.len,
         };
         checkOneShot(window, cap, tc.source, tc.expect) catch |err| {
-            std.debug.print("\nFAIL ({s}): {s}\n", .{ tc.desc, @errorName(err) });
+            print("\nFAIL ({s}): {s}\n", .{ tc.desc, @errorName(err) });
             return err;
         };
     }

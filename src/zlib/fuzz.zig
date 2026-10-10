@@ -61,11 +61,10 @@ const mem = std.mem;
 
 const fastmem = @import("fastmem");
 
+const flate = @import("../flate/root.zig");
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
-const common = @import("common.zig");
-const readInt = common.readInt;
-const flate = @import("../flate/root.zig");
+const readInt = @import("common.zig").readInt;
 const zlib = @import("root.zig");
 
 // ---------------------------------------------------------------------------

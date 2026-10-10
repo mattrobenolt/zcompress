@@ -129,10 +129,10 @@ const testing = std.testing;
 
 const fastmem = @import("fastmem");
 
-const common = @import("common.zig");
-const golden = @import("golden.zig");
 const internal = @import("../internal/root.zig");
+const golden = @import("golden.zig");
 const literals = @import("literals.zig");
+const readInt = @import("common.zig").readInt;
 const sequences = @import("sequences.zig");
 
 /// `§3.1.1.2.4` — "128 KB": Block_Maximum_Size's ceiling. A frame's own
@@ -191,7 +191,7 @@ pub const Header = struct {
 /// Fewer than 3 bytes is the input's end: `Truncated`.
 pub fn parseHeader(source: []const u8) error{Truncated}!Header {
     if (source.len < block_header_len) return error.Truncated;
-    const bits = common.readInt(u24, source[0..block_header_len]);
+    const bits = readInt(u24, source[0..block_header_len]);
     return .{
         .last_block = (bits & 1) != 0,
         .block_type = @enumFromInt(@as(u2, @truncate((bits >> 1) & 0b11))),
