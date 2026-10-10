@@ -25,9 +25,11 @@ section):
   `input` through the member's last trailer byte and stops there — bytes
   after the member are not consumed, not interpreted, never silently
   skipped — so the input position at the clean end is the next member's first
-  byte. Multi-member composes outside the reader: a caller loop at that
-  boundary, where garbage in a next member's place fails `BadHeader` — fail
-  closed at interpretation. (Go's multistream reader fails `ErrHeader` on
+  byte. Multi-member composes inside the package: `Reader.streamAll` walks
+  one member per iteration at that boundary, where garbage in a next
+  member's place fails `BadHeader` — fail closed at interpretation, and a
+  member that is not present at all is the file's clean end (zero members,
+  no error). (Go's multistream reader fails `ErrHeader` on
   the same input, the gzip CLI warns "trailing garbage ignored" and exits 2,
   CPython tolerates trailing zeros, libdeflate reports the member's end and
   leaves concatenation to the caller — `containers-notes.md §2.5` T2 and
@@ -107,8 +109,12 @@ gzip.Reader.Error = flate.Reader.Error || error{
 
 // The one-call conveniences: stack-buffered end-to-end, zero allocation.
 gzip.Writer.streamAll(in, out, options) error{ReadFailed, WriteFailed}!usize
+gzip.Reader.streamMember(in, out) error{ReadFailed, WriteFailed}!usize
 gzip.Reader.streamAll(in, out) error{ReadFailed, WriteFailed}!usize
 ```
+
+`Reader.streamMember` consumes one member; `Reader.streamAll` consumes
+every member `in` holds (the walk above).
 
 Caller-owned buffer types (exact pointers at init; both are flate's, named
 here for a self-contained surface):
@@ -345,9 +351,10 @@ Semantics:
   rule).
 - The reader consumes `input` exactly through the member's last trailer byte
   and stops there; bytes after the member are left unconsumed. A
-  multi-member file is a caller loop: after `error.EndOfStream`, the input
-  position is the next member's first byte; a fresh `Reader` continues
-  there, and garbage in a header's place fails `BadHeader`.
+  multi-member file is `Reader.streamAll`'s walk: after `error.EndOfStream`,
+  the input position is the next member's first byte; the walk continues
+  there until a member is not present (the file's clean end, zero members
+  served), and garbage in a header's place fails `BadHeader`.
 - At the body's clean end the reader reads and verifies the trailer exactly
   once, and only then reports `error.EndOfStream` (sticky). A trailer
   mismatch is `error.ReadFailed` with `err` set to `WrongChecksum` /
@@ -360,9 +367,11 @@ Semantics:
   owns it) plus this module's entries, recorded in `err` beside the
   interface's coarse `error.ReadFailed` / `error.EndOfStream`.
 - `Reader.streamAll` / `Writer.streamAll` are the stack-buffered one-call
-  pumps (flate's shape): `Reader.streamAll` consumes one member and leaves
-  the rest of `in` unconsumed; `Writer.streamAll` consumes `in` to its end
-  and writes one member.
+  pumps (flate's shape): `Reader.streamAll` consumes every member `in`
+  holds — the walk above, zero members from empty input, garbage failing
+  closed — while `Reader.streamMember` consumes one member and leaves the
+  rest of `in` unconsumed; `Writer.streamAll` consumes `in` to its end and
+  writes one member.
 
 Files (the intended layout; the implementation lanes may split further):
 `root.zig` (public surface), `encode.zig` (member emission), `decode.zig`

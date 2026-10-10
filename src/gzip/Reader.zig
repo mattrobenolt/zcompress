@@ -199,10 +199,37 @@ fn rebase(r: *Reader, capacity: usize) Io.Reader.RebaseError!void {
 /// through the member's last trailer byte; bytes after it — the next
 /// member's, or garbage — are left unconsumed (README, "Streaming"). Zero
 /// allocation: the window is a stack local.
-pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!usize {
+pub fn streamMember(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!usize {
     var buffer: Buffer = undefined;
     var rr: Reader = .init(r, &buffer);
     return rr.reader.streamRemaining(w);
+}
+
+/// Stream every member `r` holds — RFC 1952 §2.2: "a gzip file is a
+/// sequence of members" — into `w`, returning the total decoded bytes
+/// served. One member per iteration through the boundary above: the input
+/// position at a member's clean end is the next member's first byte, and a
+/// member that is not present at all is the file's clean end (zero members
+/// served, no error). Garbage where a member should start fails its header
+/// parse — fail closed at interpretation, never silently skipped — and a
+/// member cut off mid-stream fails as `streamMember` would. The walk is
+/// `streamMember`'s semantics per member; for a failure's detail, drive a
+/// `Reader` (or `streamMember`) directly — this pump reports the coarse
+/// `error.ReadFailed`. Zero allocation: the window is a stack local.
+pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!usize {
+    var buffer: Buffer = undefined;
+    var rr: Reader = undefined;
+    var served: usize = 0;
+    while (true) {
+        // A clean end between members is the file's end; any byte where a
+        // member should start is parsed as one, so garbage fails closed.
+        _ = r.peekByte() catch |err| switch (err) {
+            error.EndOfStream => return served,
+            else => |e| return e,
+        };
+        rr = .init(r, &buffer);
+        served += try rr.reader.streamRemaining(w);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -399,10 +426,10 @@ test "Reader: a multi-member file is a caller loop at the boundary" {
     defer first.deinit();
     var second: Io.Writer.Allocating = .init(gpa);
     defer second.deinit();
-    try testing.expectEqual(@as(usize, 12), try Reader.streamAll(&fixed_in, &first.writer));
+    try testing.expectEqual(@as(usize, 12), try Reader.streamMember(&fixed_in, &first.writer));
     try testing.expectEqualStrings("hello world\n", first.written());
     try testing.expectEqual(@as(usize, 42), fixed_in.seek);
-    try testing.expectEqual(@as(usize, 12), try Reader.streamAll(&fixed_in, &second.writer));
+    try testing.expectEqual(@as(usize, 12), try Reader.streamMember(&fixed_in, &second.writer));
     try testing.expectEqualStrings("hello world\n", second.written());
     try testing.expectEqual(@as(usize, 84), fixed_in.seek);
 
@@ -571,15 +598,62 @@ test "Reader: a chunked input refills across the header and the body" {
     try testing.expectEqual(@as(?Error, null), r.err);
 }
 
-test "Reader: streamAll consumes one member and leaves the rest" {
-    // README, "Streaming": `Reader.streamAll` consumes one member and leaves
-    // the rest of `in` unconsumed — the same boundary the manual path keeps.
+test "Reader: streamMember consumes one member and leaves the rest" {
+    // README, "Streaming": `Reader.streamMember` consumes one member and
+    // leaves the rest of `in` unconsumed — the same boundary the manual path
+    // keeps.
     const gpa = testing.allocator;
     const x2 = golden.gunzip_cases[3].source;
     var fixed_in: Io.Reader = .fixed(x2);
     var out: Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    try testing.expectEqual(@as(usize, 12), try Reader.streamAll(&fixed_in, &out.writer));
+    try testing.expectEqual(@as(usize, 12), try Reader.streamMember(&fixed_in, &out.writer));
     try testing.expectEqualStrings("hello world\n", out.written());
     try testing.expectEqual(@as(usize, 42), fixed_in.seek);
+}
+
+test "Reader: streamAll walks every member to the input's end" {
+    // RFC 1952 §2.2 — "a gzip file is a sequence of members": `streamAll`
+    // decodes the whole sequence and stops at the last member's last trailer
+    // byte.
+    const gpa = testing.allocator;
+    // `gunzip_cases[3]` is itself a two-member file (the fixture above's
+    // `streamMember` pair): the walk serves both members and stops at the
+    // second member's last trailer byte.
+    const x2 = golden.gunzip_cases[3].source;
+    var fixed_in: Io.Reader = .fixed(x2);
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    try testing.expectEqual(@as(usize, 24), try Reader.streamAll(&fixed_in, &out.writer));
+    try testing.expectEqualStrings("hello world\nhello world\n", out.written());
+    try testing.expectEqual(@as(usize, x2.len), fixed_in.seek);
+}
+
+test "Reader: streamAll serves zero members from empty input" {
+    // README, "Streaming" — the member walk: a member that is not present
+    // at all is the file's clean end, so an empty input serves zero bytes
+    // and errors nothing.
+    var fixed_in: Io.Reader = .fixed("");
+    var out: Io.Writer.Allocating = .init(testing.allocator);
+    defer out.deinit();
+    try testing.expectEqual(@as(usize, 0), try Reader.streamAll(&fixed_in, &out.writer));
+    try testing.expectEqual(@as(usize, 0), out.written().len);
+}
+
+test "Reader: streamAll fails closed where a member should start" {
+    // README, "Streaming" — the member walk: any byte where a member
+    // should start is parsed as one, so trailing garbage fails its header
+    // parse instead of being skipped.
+    const gpa = testing.allocator;
+    const x2 = golden.gunzip_cases[3].source;
+    var framed: [x2.len + 1]u8 = undefined;
+    fastmem.copy(u8, framed[0..x2.len], x2);
+    framed[x2.len] = 0x00; // garbage: not ID1, so the header parse rejects.
+    var fixed_in: Io.Reader = .fixed(&framed);
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    try testing.expectError(
+        error.ReadFailed,
+        Reader.streamAll(&fixed_in, &out.writer),
+    );
 }

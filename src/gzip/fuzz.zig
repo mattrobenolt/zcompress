@@ -15,7 +15,7 @@
 //!     `Reader` end proves its trailer matches the reference checksums of its
 //!     own output at the exact member boundary.
 //!   - `fuzzStreamRoundTrip`: `Writer` -> `Reader` identity over members,
-//!     through both `streamAll` pairs and the manual init/write/finish and
+//!     through both `streamMember` pairs and the manual init/write/finish and
 //!     consume paths, plus the exact-boundary property: markers and a second
 //!     member after the trailer are never consumed, and a fresh reader at the
 //!     boundary decodes the next member (the caller loop).
@@ -819,7 +819,7 @@ const stream_corpus: []const []const u8 = &.{
     &sliceSeed(0, ""),
 };
 
-/// Target 3: `Writer` -> `Reader` identity over members, both the `streamAll`
+/// Target 3: `Writer` -> `Reader` identity over members, both the `streamMember`
 /// pair and the manual init/write/finish and consume paths.
 ///
 /// Attacks the lazy header (written before the first compressed byte), the
@@ -843,7 +843,7 @@ fn fuzzStreamRoundTrip(_: void, smith: *Smith) anyerror!void {
     var sink: Io.Writer.Discarding = .init(&.{});
 
     // Path A — the `streamAll` pair: Writer.streamAll consumes its input
-    // exactly, then Reader.streamAll decodes it back.
+    // exactly, then Reader.streamMember decodes it back.
     var member_out: Io.Writer.Allocating = .init(gpa);
     defer member_out.deinit();
     var source_in: Io.Reader = .fixed(input);
@@ -862,7 +862,7 @@ fn fuzzStreamRoundTrip(_: void, smith: *Smith) anyerror!void {
     var framed_in: Io.Reader = .fixed(&framed);
     var plain: Io.Writer.Allocating = .init(gpa);
     defer plain.deinit();
-    const served = try gzip.Reader.streamAll(&framed_in, &plain.writer);
+    const served = try gzip.Reader.streamMember(&framed_in, &plain.writer);
     try testing.expectEqual(input.len, served);
     try testing.expectEqualSlices(u8, input, plain.written());
     try testing.expectEqual(member.len, framed_in.seek);
@@ -890,13 +890,13 @@ fn fuzzStreamRoundTrip(_: void, smith: *Smith) anyerror!void {
     var two_in: Io.Reader = .fixed(two);
     var first: Io.Writer.Allocating = .init(gpa);
     defer first.deinit();
-    const first_served = try gzip.Reader.streamAll(&two_in, &first.writer);
+    const first_served = try gzip.Reader.streamMember(&two_in, &first.writer);
     try testing.expectEqual(input.len, first_served);
     try testing.expectEqualSlices(u8, input, first.written());
     try testing.expectEqual(member.len, two_in.seek);
     var second: Io.Writer.Allocating = .init(gpa);
     defer second.deinit();
-    const second_served = try gzip.Reader.streamAll(&two_in, &second.writer);
+    const second_served = try gzip.Reader.streamMember(&two_in, &second.writer);
     try testing.expectEqual(input.len, second_served);
     try testing.expectEqualSlices(u8, input, second.written());
     try testing.expectEqual(2 * member.len, two_in.seek);
@@ -1049,7 +1049,7 @@ fn fuzzWriterMachinery(_: void, smith: *Smith) anyerror!void {
     var plain: Io.Writer.Allocating = .init(gpa);
     defer plain.deinit();
     var fixed_in: Io.Reader = .fixed(member.written());
-    const served = try gzip.Reader.streamAll(&fixed_in, &plain.writer);
+    const served = try gzip.Reader.streamMember(&fixed_in, &plain.writer);
     try testing.expectEqual(expect.items.len, served);
     try testing.expectEqualSlices(u8, expect.items, plain.written());
     try testing.expectEqual(member.written().len, fixed_in.seek);
@@ -1355,7 +1355,7 @@ fn fuzzChecksumAccounting(_: void, smith: *Smith) anyerror!void {
     var plain: Io.Writer.Allocating = .init(gpa);
     defer plain.deinit();
     var fixed_in: Io.Reader = .fixed(m);
-    const served = try gzip.Reader.streamAll(&fixed_in, &plain.writer);
+    const served = try gzip.Reader.streamMember(&fixed_in, &plain.writer);
     try testing.expectEqual(input.len, served);
     try testing.expectEqualSlices(u8, input, plain.written());
     try testing.expectEqual(m.len, fixed_in.seek);

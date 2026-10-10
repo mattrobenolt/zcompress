@@ -3,12 +3,11 @@
 //!
 //! This is the thin-pump shape the streaming layer enables: `encode` wraps
 //! stdout in a `gzip.Writer` and pumps the input into it (one member);
-//! `decode` walks the input member by member, one `gzip.Reader` per member —
-//! the multi-member caller loop the container's boundary contract documents
-//! (src/gzip/README.md, "The wrapping design": a reader consumes exactly one
-//! member and leaves the rest; garbage in a next member's place fails
-//! `BadHeader`). A trailing byte that is not a member is therefore an error,
-//! never silently ignored.
+//! `decode` is the member walk the container owns (`Reader.streamAll`,
+//! RFC 1952 §2.2: a gzip file is a sequence of members — one member per
+//! iteration at the boundary contract's exact position; a member that is
+//! not present is the file's clean end; garbage in a next member's place
+//! fails `BadHeader`, never silently ignored).
 //!
 //! Both pumps are stack-buffered end to end: the whole encode/decode path
 //! allocates nothing.
@@ -36,15 +35,7 @@ fn encode(arena: Allocator, in: *Io.Reader, out: *Io.Writer) !void {
 
 fn decode(arena: Allocator, in: *Io.Reader, out: *Io.Writer) !void {
     _ = arena;
-    while (true) {
-        // A clean end between members is the file's end; any byte where a
-        // member should start is parsed as one, so garbage fails closed.
-        _ = in.peekByte() catch |err| switch (err) {
-            error.EndOfStream => return,
-            else => |e| return e,
-        };
-        _ = try gzip.Reader.streamAll(in, out);
-    }
+    _ = try gzip.Reader.streamAll(in, out);
 }
 
 test "example: streaming round-trip" {
