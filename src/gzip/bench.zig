@@ -5,7 +5,14 @@
 //! corpus and level: the container story is that the flate core dominates and
 //! the framing must be noise — the delta between the gzip and raw rows is the
 //! 10-byte header, the 8-byte trailer, and the CRC-32 pass, measured, not
-//! assumed (README, "Benchmarks"). Throughput is reported as MB/s over the
+//! assumed (README, "Benchmarks"). The container's own rows carry a `Gzip`
+//! prefix (`BenchmarkGzipCompress/...`) because each bench root builds its own
+//! binary: an unprefixed `BenchmarkCompress/32K/text` collides with flate's
+//! own bench rows in a combined report, and the rows are not interchangeable —
+//! cross-binary, flate.encode.compress codegen flips with unrelated binary
+//! composition (LLVM's inlining of the bit-writer state; the random shape
+//! swings ~2x). Compare container rows to the paired rows in the SAME binary,
+//! never to flate's own bench binary. Throughput is reported as MB/s over the
 //! *uncompressed* size so compress and decompress are directly comparable.
 //!
 //! Output is benchstat-friendly:
@@ -102,7 +109,9 @@ fn caseName(comptime size: Size, comptime shape: Shape) []const u8 {
 }
 
 /// The gzip one-shot encoder. Reports MB/s over the uncompressed input.
-pub fn benchmarkCompress(b: *bench.B) !void {
+/// (`Gzip` prefix: this binary's rows must not collide with flate's own
+/// bench rows — see the file header.)
+pub fn benchmarkGzipCompress(b: *bench.B) !void {
     inline for (.{ Size.half, Size.block }) |size| {
         inline for (.{ Shape.text, Shape.random, Shape.html, Shape.rle, Shape.mixed }) |shape| {
             _ = try b.run(caseName(size, shape), struct {
@@ -127,7 +136,7 @@ pub fn benchmarkCompress(b: *bench.B) !void {
 /// The gzip one-shot decoder. The member is prepared once (outside the timed
 /// loop), then decompressed repeatedly. Reports MB/s over the decompressed
 /// size.
-pub fn benchmarkDecompress(b: *bench.B) !void {
+pub fn benchmarkGzipDecompress(b: *bench.B) !void {
     inline for (.{ Size.half, Size.block }) |size| {
         inline for (.{ Shape.text, Shape.random, Shape.html, Shape.rle, Shape.mixed }) |shape| {
             _ = try b.run(caseName(size, shape), struct {
@@ -155,7 +164,7 @@ pub fn benchmarkDecompress(b: *bench.B) !void {
 
 /// Compression ratio (member / uncompressed) per size and shape, reported as
 /// a custom metric. Not a timed loop — it runs once.
-pub fn benchmarkRatio(b: *bench.B) !void {
+pub fn benchmarkGzipRatio(b: *bench.B) !void {
     inline for (.{ Size.half, Size.block }) |size| {
         inline for (.{ Shape.text, Shape.random, Shape.html, Shape.rle, Shape.mixed }) |shape| {
             _ = try b.run(caseName(size, shape), struct {

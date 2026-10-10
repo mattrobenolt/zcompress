@@ -5,8 +5,16 @@
 //! corpus and level: the container story is that the flate core dominates and
 //! the framing must be noise — the delta between the zlib and raw rows is the
 //! 2-byte header, the 4-byte trailer, and the Adler-32 pass, measured, not
-//! assumed (README, "Benchmarks"). Throughput is reported as MB/s over the
-//! *uncompressed* size so compress and decompress are directly comparable.
+//! assumed (README, "Benchmarks"). The container's own rows carry a `Zlib`
+//! prefix (`BenchmarkZlibCompress/...`) because each bench root builds its
+//! own binary: an unprefixed `BenchmarkCompress/32K/text` collides with
+//! flate's own bench rows in a combined report, and the rows are not
+//! interchangeable — cross-binary, flate.encode.compress codegen flips with
+//! unrelated binary composition (LLVM's inlining of the bit-writer state;
+//! the random shape swings ~2x). Compare container rows to the paired rows
+//! in the SAME binary, never to flate's own bench binary. Throughput is
+//! reported as MB/s over the *uncompressed* size so compress and decompress
+//! are directly comparable.
 //!
 //! Output is benchstat-friendly:
 //! `zig build bench -Doptimize=ReleaseFast -- --count=10 > bench.txt`.
@@ -102,7 +110,7 @@ fn caseName(comptime size: Size, comptime shape: Shape) []const u8 {
 }
 
 /// The zlib one-shot encoder. Reports MB/s over the uncompressed input.
-pub fn benchmarkCompress(b: *bench.B) !void {
+pub fn benchmarkZlibCompress(b: *bench.B) !void {
     inline for (.{ Size.half, Size.block }) |size| {
         inline for (.{ Shape.text, Shape.random, Shape.html, Shape.rle, Shape.mixed }) |shape| {
             _ = try b.run(caseName(size, shape), struct {
@@ -127,7 +135,7 @@ pub fn benchmarkCompress(b: *bench.B) !void {
 /// The zlib one-shot decoder. The stream is prepared once (outside the timed
 /// loop), then decompressed repeatedly. Reports MB/s over the decompressed
 /// size.
-pub fn benchmarkDecompress(b: *bench.B) !void {
+pub fn benchmarkZlibDecompress(b: *bench.B) !void {
     inline for (.{ Size.half, Size.block }) |size| {
         inline for (.{ Shape.text, Shape.random, Shape.html, Shape.rle, Shape.mixed }) |shape| {
             _ = try b.run(caseName(size, shape), struct {
@@ -155,7 +163,7 @@ pub fn benchmarkDecompress(b: *bench.B) !void {
 
 /// Compression ratio (stream / uncompressed) per size and shape, reported as
 /// a custom metric. Not a timed loop — it runs once.
-pub fn benchmarkRatio(b: *bench.B) !void {
+pub fn benchmarkZlibRatio(b: *bench.B) !void {
     inline for (.{ Size.half, Size.block }) |size| {
         inline for (.{ Shape.text, Shape.random, Shape.html, Shape.rle, Shape.mixed }) |shape| {
             _ = try b.run(caseName(size, shape), struct {

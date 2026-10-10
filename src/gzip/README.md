@@ -286,14 +286,19 @@ What std has, verified by running (`containers-notes.md §3.1`):
 
 This module wraps the kernel behind its own function boundary — the
 libdeflate shape, `crc32(crc, bytes)` with the pre/post-conditioning inside
-and "return the initial value" for an empty or null input — so the day-one
-std kernel is swappable without touching the containers (`containers-notes.md
-§3.3`). The M3 performance work (the plan's deferred decision: slice-by-8
-tables, then folded-vector/PCLMULQDQ after the `ghash_polyval` study) lands
-behind that boundary. The kernel file lives in this codec directory, not
-`src/internal/`: CRC-32 has one user in this repo (`containers-notes.md
-§3.3` — snappy's framing carries no checksum and zstd uses xxhash, so
-`src/internal/checksum.zig` waits for a second user).
+and "return the initial value" for an empty or null input — so the kernel is
+swappable without touching the containers (`containers-notes.md §3.3`). The
+M3 performance work landed behind that boundary: the kernel is now the
+slice-by-16 table method (sixteen interleaved 256-entry comptime tables,
+sixteen independent loads per step — the portable table shape; std's bytewise
+loop measured ~2.1 ns/byte against slice-by-16's ~0.24 ns/byte on the dev
+box, local numbers only), with std's `Crc32` kept as the test oracle. The
+folded-vector/PCLMULQDQ step of the plan's deferred decision (after the
+`ghash_polyval` study) still waits behind the same boundary. The kernel file
+lives in this codec directory, not `src/internal/`: CRC-32 has one user in
+this repo (`containers-notes.md §3.3` — snappy's framing carries no checksum
+and zstd uses xxhash, so `src/internal/checksum.zig` waits for a second
+user).
 
 Hashing happens exactly once per byte, where bytes cross the flate boundary
 (OQ1): on encode, a block is hashed as it is emitted (the block's bytes are
@@ -453,11 +458,13 @@ a fleet run directory and a results file under `docs/results/`.
 The container story is that the flate core dominates and the framing must be
 noise: a member adds 10 header bytes and 8 trailer bytes per stream, and the
 one thing that shows up in a container number is the checksum pass — CRC-32
-over the whole payload. Rows: `BenchmarkCompress` / `BenchmarkDecompress`
-(the one-shot container path over the same shapes as flate's), `BenchmarkRatio`,
-and the paired raw-flate rows that isolate the container's delta (same
-corpus, same level) — the framing-plus-checksum overhead, measured, not
-assumed. The streaming direction comes from the example pump (`just example
+over the whole payload. Rows: `BenchmarkGzipCompress` /
+`BenchmarkGzipDecompress` (the one-shot container path over the same shapes
+as flate's), `BenchmarkGzipRatio`, and the paired raw-flate rows
+(`BenchmarkFlateCompress` / `BenchmarkFlateDecompress`) that isolate the
+container's delta (same corpus, same level, same binary — cross-binary the
+flate core's codegen itself moves; see `bench.zig`'s header) — the
+framing-plus-checksum overhead, measured, not assumed. The streaming direction comes from the example pump (`just example
 gzip encode|decode <file>`), which times the same path with real file sinks
 (the flate precedent for avoiding bench-binary code-layout interference).
 

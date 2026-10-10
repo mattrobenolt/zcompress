@@ -259,11 +259,16 @@ its "Hello world\n" value matches C zlib's through the oracle. Correct and
 in-tree: the day-one kernel.
 
 As in gzip, the kernel is wrapped behind this module's own function boundary
-(the libdeflate shape, `adler32(adler, bytes)`), so the day-one std kernel
-is swappable without touching the containers (`containers-notes.md §3.3`);
-the M3 performance work lands behind that boundary, in this codec directory
-(`src/internal/checksum.zig` waits for a second user — Adler-32's only user
-is zlib). Hashing happens exactly once per byte, where bytes cross the flate
+(the libdeflate shape, `adler32(adler, bytes)`), so the kernel is swappable
+without touching the containers (`containers-notes.md §3.3`). The M3
+performance work landed behind that boundary: the kernel keeps §8.2's
+5552-byte deferred-modulo blocks but folds each block with two `@Vector`
+accumulators (byte-sum lanes and weight-times-byte lanes, reduced once per
+block) instead of the per-byte `s1 += b; s2 += s1` chain — ~0.10 ns/byte
+against std's scalar ~0.32 ns/byte on the dev box, local numbers only, with
+std's `Adler32` kept as the test oracle. The kernel file lives in this codec
+directory (`src/internal/checksum.zig` waits for a second user — Adler-32's
+only user is zlib). Hashing happens exactly once per byte, where bytes cross the flate
 boundary (OQ1; `src/gzip/README.md`, "The checksums"): blocks on encode,
 window fills on decode, `source` directly on the one-shot encode.
 
