@@ -146,6 +146,8 @@ zstd.decode.DecompressError = error{
     TreelessLiteralsFirst,   // Treeless with no previous tree (§3.1.1.3.1.1)
     MalformedHuffmanWeights, // the weight series and its completion (§4.2.1)
     MalformedFseTable,       // accuracy log, budget, or symbol count (§4.1.1)
+    MalformedSequencesHeader,// the sequences section's fixed-size fields
+                             // running past the block (§3.1.1.3.2.1)
     RepeatModeFirst,         // Repeat with no previous table (§3.1.1.3.2.1)
     ReservedModeBits,        // Symbol_Compression_Modes bits 1-0 (§3.1.1.3.2.1)
     MissingStartBit,         // a backwards bitstream's last byte is zero
