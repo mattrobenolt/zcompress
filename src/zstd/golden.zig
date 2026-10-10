@@ -545,6 +545,12 @@ pub const frame_window_128k = hex("28b52ffd003802001041020010424d000000015400110
 pub const frame_window_128k_over = hex("28b52ffd003802001041020010424d000000015400110004" ++
     "0002");
 
+/// A 1152-byte window (Window_Descriptor 0x01: exponent 0, mantissa 1 — `windowBase` 1024 plus
+/// `windowAdd` 128, the first window above `§3.1.1.1.2`'s 1-KB minimum), one zero-size Raw
+/// block: the streaming reader's cap boundary, one byte past a `Buffer(1024)`'s window. The
+/// CLI decodes it to zero bytes (`zstd -t` exits 0, `Window Size: 1152 B`).
+pub const frame_window_1152 = hex("28b52ffd0001010000");
+
 /// A 1 KB-window frame whose compressed block declares a 1026-byte match length (code 45, 9
 /// extra bits) over a 16-byte history: past Block_Maximum_Size, refused by the CLI and by us.
 pub const frame_amplify_match = hex("28b52ffd0000800000303132333435363738396162636465" ++

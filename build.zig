@@ -52,7 +52,7 @@ pub fn build(b: *Build) void {
         .optimize = optimize,
     });
 
-    inline for (.{ "snappy", "flate", "gzip", "zlib" }) |name| {
+    inline for (.{ "snappy", "flate", "gzip", "zlib", "zstd" }) |name| {
         const mod = b.createModule(.{
             .root_source_file = b.path(comptimePrint("examples/{s}.zig", .{name})),
             .target = target,

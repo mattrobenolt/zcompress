@@ -26,10 +26,9 @@ pub const zlib = @import("zlib/root.zig");
 /// zstd (RFC 8878) decoder: the frame, block, literals (huff0), and
 /// sequences (FSE) layers, the XXH64 frame checksum, and the `std.Io`
 /// streaming layer. API and design: `src/zstd/README.md`; format:
-/// docs/research/specs/rfc8878-zstd.txt. M4 is decoder-first and lands in
-/// slices: `zstd.decode` (the one-shot) is here; `zstd.Reader` (the
-/// streaming reader) is the next slice, and `zstd.encode`/`zstd.Writer`
-/// are M5.
+/// docs/research/specs/rfc8878-zstd.txt. M4 is decoder-first: `zstd.decode`
+/// (the one-shot) and `zstd.Reader` (the streaming frame decoder) are here;
+/// `zstd.encode`/`zstd.Writer` (the fast encoder) are M5.
 pub const zstd = @import("zstd/root.zig");
 
 test {
@@ -58,5 +57,6 @@ test {
     _ = zlib.Writer.streamAll;
     _ = zstd.decode.max_block_size;
     _ = zstd.decode.decompress;
+    _ = zstd.Reader.streamAll;
     std.testing.refAllDecls(@This());
 }

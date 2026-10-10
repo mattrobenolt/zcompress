@@ -12,9 +12,11 @@
 //! (`block.zig`: the Block_Header, the Raw/RLE/Compressed dispatch, and the
 //! frame's cross-block state), then the frame layer (`frame.zig`: the
 //! magic, the Frame_Header, the block chain, the XXH64 trailer, skippable
-//! frames) with the one-shot decoder (`decode.zig`) on top of it. The
-//! public surface is `zstd.decode` and `zstd.Reader`; the streaming reader
-//! is the next slice.
+//! frames) with the one-shot decoder (`decode.zig`) on top of it, and the
+//! streaming frame decoder (`Reader.zig`: one frame per reader at the exact
+//! boundary, the caller-owned window buffer, the `streamFrame`/`streamAll`
+//! walk). The public surface is `zstd.decode` and `zstd.Reader`; M5 adds
+//! `zstd.encode` and `zstd.Writer` (README, the header).
 //! Contracts: README.md (the M4 sketch); format:
 //! docs/research/specs/rfc8878-zstd.txt.
 
@@ -35,6 +37,12 @@ const xxh64 = @import("xxh64.zig");
 /// the `window` arithmetic). API and design: README.md, "API".
 pub const decode = @import("decode.zig");
 
+/// The streaming frame decoder: the decompressing `Io.Reader` over one
+/// Zstandard frame, the caller-owned window buffer (`Reader.Buffer`), and
+/// the `streamFrame`/`streamAll` pumps. API and design: README.md,
+/// "Streaming".
+pub const Reader = @import("Reader.zig");
+
 test {
     _ = bits;
     _ = block;
@@ -46,6 +54,7 @@ test {
     _ = sequences;
     _ = xxh64;
     _ = decode;
+    _ = Reader;
     _ = @import("golden.zig");
     std.testing.refAllDecls(@This());
 }

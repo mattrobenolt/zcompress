@@ -181,7 +181,9 @@ zstd.Reader.DefaultBuffer
         // (§3.1.1.1.2's minimum), and frames that need more fail
         // `WindowTooLarge`.
 var rbuf: zstd.Reader.DefaultBuffer = undefined;
-var r: zstd.Reader = .init(in, &rbuf);  // the exact pointer; no allocator
+// The comptime window and the buffer's type must agree — the compiler is
+// the check — so the cap and the buffer cannot disagree. No allocator.
+var r: zstd.Reader = .init(zstd.Reader.default_window_len, in, &rbuf);
 // Consume through &r.reader (stream, read-family, peek-family); the reader
 // ends with error.EndOfStream once the frame's checksum is verified, details
 // in r.err. A failed or done reader is sticky.
@@ -198,14 +200,17 @@ zstd.Reader.Error = error{
 // buffer, zero allocation, and no stack buffer of their own (8 MiB + 128 KiB
 // does not belong on a stack — a caller who wants a small pump instantiates a
 // small window).
-zstd.Reader.streamFrame(in, out, buffer) error{ReadFailed, WriteFailed}!usize
-zstd.Reader.streamAll(in, out, buffer) error{ReadFailed, WriteFailed}!usize
+zstd.Reader.streamFrame(window_len, in, out, buffer) error{ReadFailed, WriteFailed}!usize
+zstd.Reader.streamAll(window_len, in, out, buffer) error{ReadFailed, WriteFailed}!usize
+        // `window_len` is comptime and `buffer` is the exact pointer to a
+        // `Reader.Buffer(window_len)`: the two must agree at the call site.
 ```
 
 `Reader.streamFrame` consumes and decodes one Zstandard frame — consuming and
 ignoring any skippable frames before it (§3.1.2) — and leaves the rest of `in`
 unconsumed; `Reader.streamAll` consumes every frame `in` holds, the walk
-above. Both take the exact pointer to a `Reader.Buffer(window_len)`; the pump
+above. Both take the comptime `window_len` and the exact pointer to a
+`Reader.Buffer(window_len)` — the compiler holds the two together; the pump
 reports the coarse `error.ReadFailed`, so a caller who needs a failure's
 detail drives a `Reader` (or `streamFrame`) directly.
 
@@ -578,9 +583,10 @@ full:
 
 - `Reader.Buffer(window_len)` is `[window_len + max_block_size]u8`: the
   retained history (up to the frame's Window_Size, capped by `window_len`)
-  plus the largest decoded block. `Reader.init(input: *Io.Reader, buffer: *...)`
-  takes the exact pointer; the authorized window is derived from the buffer's
-  type, so the cap and the buffer cannot disagree.
+  plus the largest decoded block. `Reader.init(comptime window_len, input,
+  buffer: *Buffer(window_len))` takes the comptime window and the exact
+  pointer to the named buffer type; the two must agree, so the cap and the
+  buffer cannot disagree.
 - Zero allocation end to end: no allocator appears anywhere in the streaming
   API. The block staging and the literals scratch are comptime-sized stack
   locals.
@@ -633,8 +639,11 @@ Semantics:
   allocation. `streamAll` is the walk above: skippable units pass through with
   zero bytes, a file of only skippable frames is the clean end with zero bytes
   served, the zero-byte input is the clean end (zero frames served), and
-  garbage fails closed. `streamFrame` on a zero-byte input is `error.Truncated`
-  — no frame unit began (the gzip decision mapped over, T10).
+  garbage fails closed. `streamFrame` on a zero-byte input fails with the
+  coarse interface error and the detail `.Truncated` in `err` — no frame
+  unit began (the gzip decision mapped over, T10); the pumps report the
+  interface's coarse `error.ReadFailed`, the reader carries the specific
+  detail beside it (the M3 lifecycle trio's shape).
 
 Files (the intended layout; the implementation lanes may split further):
 `root.zig` (public surface), `decode.zig` (the one-shot and the shared decode
@@ -651,7 +660,11 @@ every layer's tests), `common.zig` (little-endian integer access), `bench.zig`
 
 An example CLI (`examples/zstd.zig`, `zig build example-zstd -- decode
 <file.zst> > out`) is a thin streaming pump over this surface, the same shape
-as the other codecs' — decode-only until M5 adds the encoder direction.
+as the other codecs' — decode-only until M5 adds the encoder direction. One
+divergence from the other examples: its window is the 8.4 MiB default, which
+cannot be a portable stack local (8 MiB is a common stack limit), so the
+CLI scaffolding's arena owns the buffer for the run — the example is the
+caller the pumps expect, and the codec itself still allocates nothing.
 
 ## Testing & golden vectors
 

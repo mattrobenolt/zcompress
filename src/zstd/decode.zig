@@ -44,35 +44,32 @@ const testing = std.testing;
 
 const fastmem = @import("fastmem");
 
-const common = @import("common.zig");
-const golden = @import("golden.zig");
 const internal = @import("../internal/root.zig");
-
-/// The frame layer (`§3.1`): the Magic_Number, the Frame_Header, the block
-/// chain, the checksum trailer, and skippable frames.
-pub const frame = @import("frame.zig");
 /// The block layer (`§3.1.1.2`): the Block_Header, the four Block_Types, and
 /// the per-block decode.
 pub const block = @import("block.zig");
+/// `§3.1.1.2.4` — "128 KB": Block_Maximum_Size's ceiling. A frame's own
+/// bound is `min(Window_Size, this)`.
+pub const max_block_size = block.max_block_size;
+const common = @import("common.zig");
+/// The frame layer (`§3.1`): the Magic_Number, the Frame_Header, the block
+/// chain, the checksum trailer, and skippable frames.
+pub const frame = @import("frame.zig");
+/// `§3.1.1.1.2`'s Window_Size arithmetic.
+pub const window = frame.window;
+/// The one-shot decoder's error set (README, "API"): the frame layer's
+/// composed set — the frame header's names, the block chain's, and the two
+/// entropy layers' — name for name.
+pub const DecompressError = frame.Error;
+/// The FSE tables (`§4.1`), shared by the sequences section and the Huffman
+/// weights.
+pub const fse = @import("fse.zig");
+const golden = @import("golden.zig");
 /// The literals section (`§3.1.1.3.1`) and its Huffman streams.
 pub const literals = @import("literals.zig");
 /// The sequences section (`§3.1.1.3.2`) and Sequence Execution
 /// (`§3.1.1.4`).
 pub const sequences = @import("sequences.zig");
-/// The FSE tables (`§4.1`), shared by the sequences section and the Huffman
-/// weights.
-pub const fse = @import("fse.zig");
-/// `§3.1.1.1.2`'s Window_Size arithmetic.
-pub const window = frame.window;
-
-/// `§3.1.1.2.4` — "128 KB": Block_Maximum_Size's ceiling. A frame's own
-/// bound is `min(Window_Size, this)`.
-pub const max_block_size = block.max_block_size;
-
-/// The one-shot decoder's error set (README, "API"): the frame layer's
-/// composed set — the frame header's names, the block chain's, and the two
-/// entropy layers' — name for name.
-pub const DecompressError = frame.Error;
 
 comptime {
     // The README's vocabulary (README, "API") is this set, name for name:
@@ -225,12 +222,12 @@ test "the layer types are reachable through the decode namespace" {
     // are composed from them and the golden and fuzz lanes pin the same
     // functions. Referencing every public decl of each also keeps the
     // surface honest: a decl that no longer composes fails here.
-    std.testing.refAllDecls(frame);
-    std.testing.refAllDecls(block);
-    std.testing.refAllDecls(literals);
-    std.testing.refAllDecls(sequences);
-    std.testing.refAllDecls(fse);
-    std.testing.refAllDecls(window);
+    testing.refAllDecls(frame);
+    testing.refAllDecls(block);
+    testing.refAllDecls(literals);
+    testing.refAllDecls(sequences);
+    testing.refAllDecls(fse);
+    testing.refAllDecls(window);
     try testing.expectEqual(block.max_block_size, max_block_size);
 }
 
