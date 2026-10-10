@@ -119,6 +119,29 @@ pub fn build(b: *Build) void {
     );
     gzip_example_step.dependOn(&run_gzip_example.step);
 
+    const zlib_example_mod = b.createModule(.{
+        .root_source_file = b.path("examples/zlib.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "cli", .module = cli_mod },
+            .{ .name = "zcompress", .module = zcompress_mod },
+        },
+    });
+    const zlib_example = b.addExecutable(.{
+        .name = "zlib",
+        .root_module = zlib_example_mod,
+    });
+    const run_zlib_example = b.addRunArtifact(zlib_example);
+    // The CLI writes to stdout: always run, never a cached result.
+    run_zlib_example.has_side_effects = true;
+    if (b.args) |args| run_zlib_example.addArgs(args);
+    const zlib_example_step = b.step(
+        "example-zlib",
+        "Run the zlib example CLI (encode|decode [FILE|-])",
+    );
+    zlib_example_step.dependOn(&run_zlib_example.step);
+
     // External-oracle harness (src/flate/oracle.zig): decodes one stream from
     // a file into a caller-sized buffer, for the `just flate-oracle` lane.
     // Installed, not part of the module surface or the test/check steps.
@@ -164,6 +187,29 @@ pub fn build(b: *Build) void {
     );
     gzip_oracle_step.dependOn(&install_gzip_oracle.step);
 
+    // External-oracle harness (src/zlib/oracle.zig): decodes one stream from
+    // a file into a caller-sized buffer (and encodes an input at a chosen
+    // level), for the `just zlib-oracle` lane. Installed, not part of the
+    // module surface or the test/check steps.
+    const zlib_oracle_mod = b.createModule(.{
+        .root_source_file = b.path("src/zlib/oracle.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zcompress", .module = zcompress_mod },
+        },
+    });
+    const zlib_oracle = b.addExecutable(.{
+        .name = "zlib-oracle",
+        .root_module = zlib_oracle_mod,
+    });
+    const install_zlib_oracle = b.addInstallArtifact(zlib_oracle, .{});
+    const zlib_oracle_step = b.step(
+        "zlib-oracle-harness",
+        "Install the zlib oracle-lane harness (zig-out/bin/zlib-oracle)",
+    );
+    zlib_oracle_step.dependOn(&install_zlib_oracle.step);
+
     // The examples' own tests run with the unit tests.
     const snappy_example_tests = b.addTest(.{
         .root_module = snappy_example_mod,
@@ -186,6 +232,13 @@ pub fn build(b: *Build) void {
     const run_gzip_example_tests = b.addRunArtifact(gzip_example_tests);
     run_gzip_example_tests.has_side_effects = true;
     test_step.dependOn(&run_gzip_example_tests.step);
+    const zlib_example_tests = b.addTest(.{
+        .root_module = zlib_example_mod,
+        .test_runner = test_runner,
+    });
+    const run_zlib_example_tests = b.addRunArtifact(zlib_example_tests);
+    run_zlib_example_tests.has_side_effects = true;
+    test_step.dependOn(&run_zlib_example_tests.step);
 
     // Unit tests: one test executable over the one module. The codec
     // suites, their shared-layer consumers, and the barrel's own tests all
@@ -264,9 +317,25 @@ pub fn build(b: *Build) void {
         });
         if (b.args) |args| run_gzip_bench.addArgs(args);
 
+        const zlib_bench_root = b.createModule(.{
+            .root_source_file = b.path("src/zlib/bench.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zcompress", .module = zcompress_mod },
+                .{ .name = "fastmem", .module = fastmem_mod },
+            },
+        });
+        const run_zlib_bench = benchmark.addRunTest(b, .{
+            .dependency = benchmark_dep,
+            .root_module = zlib_bench_root,
+        });
+        if (b.args) |args| run_zlib_bench.addArgs(args);
+
         const bench_step = b.step("bench", "Run codec benchmarks (use -Doptimize=ReleaseFast)");
         bench_step.dependOn(&run_snappy_bench.step);
         bench_step.dependOn(&run_flate_bench.step);
         bench_step.dependOn(&run_gzip_bench.step);
+        bench_step.dependOn(&run_zlib_bench.step);
     }
 }

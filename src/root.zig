@@ -19,11 +19,16 @@ pub const gzip = @import("gzip/root.zig");
 /// heap allocation. API and design: `src/snappy/README.md`; format:
 /// docs/research/specs/snappy-format-description.txt.
 pub const snappy = @import("snappy/root.zig");
+/// zlib (RFC 1950) container over the flate module: the 2-byte header, the
+/// Adler-32 trailer, and the `std.Io` streaming layer. API and design:
+/// `src/zlib/README.md`; format: docs/research/specs/rfc1950-zlib.txt.
+pub const zlib = @import("zlib/root.zig");
 
 test {
     _ = flate;
     _ = snappy;
     _ = gzip;
+    _ = zlib;
     // The consumer surface, named the way a consumer names it: four names
     // per codec namespace, nothing flat at the root (AGENTS.md, "Rules").
     _ = flate.encode.Level;
@@ -38,5 +43,9 @@ test {
     _ = snappy.decode.decompressBlock;
     _ = snappy.Reader.streamAll;
     _ = snappy.Writer.streamAll;
+    _ = zlib.encode.Level;
+    _ = zlib.decode.decompress;
+    _ = zlib.Reader.streamAll;
+    _ = zlib.Writer.streamAll;
     std.testing.refAllDecls(@This());
 }

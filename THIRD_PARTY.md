@@ -42,6 +42,15 @@ and dependency with a license that is not ours.
   (BSD-3-Clause) `src/compress/gzip/testdata/issue6550.gz.base64` — the
   decompression-hang regression's input. Attribution: Copyright the Go
   Authors, https://github.com/golang/go.
+- `src/zlib/golden.zig` golden fixtures: ported from golang/go
+  (BSD-3-Clause) `src/compress/zlib/reader_test.go` (`zlibTests`, whose own
+  comment records that the golden bytes came from the C reference's
+  `zpipe.c`), plus Zig 0.16 std's in-tree zlib container tests
+  (`std/compress/flate/Decompress.zig`, MIT) as decoder goldens and
+  divergence pins (the fixed and dynamic members are std's gzip bodies with
+  zlib's framing), and the C-reference emissions verified through python3's
+  `zlib` in `docs/research/containers-notes.md §5.5`. Attribution: Copyright
+  the Go Authors, https://github.com/golang/go; Zig std contributors.
 - `src/flate/decode.zig` lineage: the two-level Huffman decode table (a
   9-bit primary table plus a chained chase for longer codes) follows the
   algorithm in zlib's `doc/algorithm.txt` (zlib license, studied), as used by

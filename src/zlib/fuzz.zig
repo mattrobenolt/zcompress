@@ -87,6 +87,16 @@ const roundtrip_max: usize = 131_072;
 /// multiple blocks and the reader slides its window.
 const stream_max: usize = 64 * 1024;
 
+/// The mid-stream flush budget: how many Smith-chosen flushes a target's
+/// writer loop may take. Every flush ends the current block and every block
+/// costs at most 5 stored-header bytes beyond its input (the encoder's
+/// stored-block fallback, `src/flate/README.md`, "Encoder"), so each flushed
+/// block grows the stream past the no-flush `maxCompressedLength` bound by at
+/// most 5 bytes — the fixed buffers below carry `5 * flush_budget` of
+/// headroom for exactly this (the bound itself budgets only the unflushed
+/// block count).
+const flush_budget: usize = 16;
+
 /// The checksum lane's source cap.
 const checksum_max: usize = 64 * 1024;
 
@@ -520,8 +530,10 @@ const Expected = enum {
 const Mutation = enum(u8) {
     /// Cut the stream at a Smith-chosen byte: its end is gone.
     truncate,
-    /// A flip in the 2-byte header: every single-byte flip breaks the FCHECK
-    /// arithmetic or CM/CINFO, so `BadHeader` exactly.
+    /// A flip in the 2-byte header: classified by the §2.2 arithmetic. An
+    /// arbitrary-byte XOR can land on another conformant pair (e.g. `78 01`
+    /// -> `78 da`, C zlib's own level-9 header), so the class is computed,
+    /// never assumed.
     flip_header,
     /// A flip inside the deflate body: the output is the body's business.
     flip_body,
@@ -576,9 +588,20 @@ fn mutateStream(smith: *Smith, buf: []u8, member_len: usize) Mutated {
             return .{ .len = cut, .member_end = member_len, .expected = expected };
         },
         .flip_header => {
+            // `flipValue` is an arbitrary nonzero byte, not a bit, so the XOR
+            // can land on another conformant header: `78 01` -> `78 da` is
+            // C zlib's level-9 pair, FLEVEL advisory and the body untouched,
+            // so that stream decodes exactly. The classification is the §2.2
+            // arithmetic's, exactly as `.poke_header` does it — a single-bit
+            // flip always breaks FCHECK or CM/CINFO, an arbitrary byte need
+            // not.
             const at = rangeAtMost(smith, 0, header_len - 1);
             buf[at] ^= flipValue(smith);
-            return .{ .len = member_len, .member_end = member_len, .expected = .fail_bad_header };
+            return .{
+                .len = member_len,
+                .member_end = member_len,
+                .expected = headerClass(buf[0], buf[1]),
+            };
         },
         .flip_body => {
             const at = rangeAtMost(smith, body_start, body_end - 1);
@@ -814,8 +837,10 @@ fn fuzzStreamRoundTrip(_: void, smith: *Smith) anyerror!void {
     const input = input_buf[0..smith.slice(&input_buf)];
 
     // The stream followed by markers, and two streams followed by markers: one
-    // buffer, both shapes.
-    var framed: [2 * zlib.encode.maxCompressedLength(stream_max) + 2 * marker_len]u8 = undefined;
+    // buffer, both shapes (plus the flushed blocks' 5-byte headers).
+    var framed: [
+        2 * zlib.encode.maxCompressedLength(stream_max) + 2 * marker_len + 5 * flush_budget
+    ]u8 = undefined;
     var sink: Io.Writer.Discarding = .init(&.{});
 
     // Path A — the `streamAll` pair: Writer.streamAll consumes its input
@@ -885,11 +910,15 @@ fn fuzzStreamRoundTrip(_: void, smith: *Smith) anyerror!void {
     var wbuf: zlib.Writer.Buffer = undefined;
     var w: zlib.Writer = .init(&stream2.writer, &wbuf, .{ .level = level });
     var pos: usize = 0;
+    var flushes: usize = 0;
     while (pos < input.len) {
         const n = @min(input.len - pos, rangeAtMost(smith, 1, 32 * 1024));
         try w.writer.writeAll(input[pos..][0..n]);
         pos += n;
-        if (smith.boolWeighted(1, 3)) try w.writer.flush();
+        if (flushes < flush_budget and smith.boolWeighted(1, 3)) {
+            try w.writer.flush();
+            flushes += 1;
+        }
     }
     try w.finish();
     const stream2_bytes = stream2.written();
@@ -1077,17 +1106,23 @@ fn fuzzReaderMachinery(_: void, smith: *Smith) anyerror!void {
     var wbuf: zlib.Writer.Buffer = undefined;
     var w: zlib.Writer = .init(&stream.writer, &wbuf, .{ .level = level });
     var p: usize = 0;
+    var flushes: usize = 0;
     while (p < input.len) {
         const n = @min(input.len - p, rangeAtMost(smith, 1, 32 * 1024));
         try w.writer.writeAll(input[p..][0..n]);
         p += n;
-        if (smith.boolWeighted(1, 3)) try w.writer.flush();
+        if (flushes < flush_budget and smith.boolWeighted(1, 3)) {
+            try w.writer.flush();
+            flushes += 1;
+        }
     }
     try w.finish();
 
     // Markers after the stream: the reader must stop at ADLER32's last byte
     // whatever the consumer ops do.
-    var framed: [zlib.encode.maxCompressedLength(reader_source_max) + marker_len]u8 = undefined;
+    var framed: [
+        zlib.encode.maxCompressedLength(reader_source_max) + marker_len + 5 * flush_budget
+    ]u8 = undefined;
     try testing.expect(stream.written().len + marker_len <= framed.len);
     fastmem.copy(u8, framed[0..stream.written().len], stream.written());
     fastmem.set(u8, framed[stream.written().len..][0..marker_len], marker_byte);
@@ -1298,11 +1333,15 @@ fn fuzzChecksumAccounting(_: void, smith: *Smith) anyerror!void {
     var wbuf: zlib.Writer.Buffer = undefined;
     var w: zlib.Writer = .init(&stream.writer, &wbuf, .{ .level = level });
     var pos: usize = 0;
+    var flushes: usize = 0;
     while (pos < input.len) {
         const n = @min(input.len - pos, rangeAtMost(smith, 1, 8192));
         try w.writer.writeAll(input[pos..][0..n]);
         pos += n;
-        if (smith.boolWeighted(1, 2)) try w.writer.flush();
+        if (flushes < flush_budget and smith.boolWeighted(1, 2)) {
+            try w.writer.flush();
+            flushes += 1;
+        }
     }
     // Empty writes and flushes must not move the digest.
     if (smith.boolWeighted(1, 1)) try w.writer.writeAll("");
@@ -1322,8 +1361,9 @@ fn fuzzChecksumAccounting(_: void, smith: *Smith) anyerror!void {
     try testing.expectEqual(s.len, fixed_in.seek);
 
     // A corrupted trailer must fail closed with WrongChecksum — the check
-    // RFC 1950 §2.3 makes a decoder MUST.
-    var corrupted: [zlib.encode.maxCompressedLength(checksum_max)]u8 = undefined;
+    // RFC 1950 §2.3 makes a decoder MUST. The buffer carries the flushed
+    // blocks' 5-byte headers beyond the no-flush bound.
+    var corrupted: [zlib.encode.maxCompressedLength(checksum_max) + 5 * flush_budget]u8 = undefined;
     fastmem.copy(u8, corrupted[0..s.len], s);
     const at = s.len - trailer_len + rangeAtMost(smith, 0, trailer_len - 1);
     corrupted[at] ^= flipValue(smith);

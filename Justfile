@@ -47,6 +47,17 @@ gzip-oracle:
     zig build gzip-oracle-harness
     uv run scripts/gzip_oracle.py
 
+# External-oracle lane for zlib: python3's zlib (the C reference, the wbits 15
+# zlib wrapper) cross-checks our streams in both directions (our encode -> its
+# decode, its encode -> our decode) over generated shapes and levels, plus the
+# FDICT refusal (and the T5 FCHECK=31 corner), the FLEVEL/FCHECK emissions, the
+# exact stream boundary, and the streaming rows through the example CLI. The
+# incantations are docs/research/containers-notes.md §5.5; the harness is
+# src/zlib/oracle.zig.
+zlib-oracle:
+    zig build zlib-oracle-harness
+    uv run scripts/zlib_oracle.py
+
 # External-oracle lane for flate: python3's zlib cross-checks the committed
 # fixtures and freshly generated shapes in both directions, raw deflate
 # (wbits=-15) — the incantations of docs/research/flate-notes.md §4.3. Both
