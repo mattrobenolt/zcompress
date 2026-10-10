@@ -105,9 +105,11 @@ pub fn compress(
     // A body that compressed under the bound can still leave no room for the
     // trailer: report that before the overflowing write, never after.
     if (target.len - trailer_at < trailer_len) return error.BufferTooSmall;
-    var trailer: [trailer_len]u8 = undefined;
-    writeTrailer(&trailer, crc32.crc32(0, source), @truncate(source.len));
-    fastmem.copy(u8, target[trailer_at..][0..trailer_len], &trailer);
+    writeTrailer(
+        target[trailer_at..][0..trailer_len],
+        crc32.crc32(0, source),
+        @truncate(source.len),
+    );
     return trailer_at + trailer_len;
 }
 

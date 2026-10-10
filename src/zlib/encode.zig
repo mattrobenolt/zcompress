@@ -72,7 +72,12 @@ pub fn flgFor(level: Level) u8 {
         .@"2", .@"3", .@"4", .@"5" => 1,
         .fast, .@"6" => 2,
         .@"7", .@"8", .@"9" => 3,
-        .ratio => unreachable, // never emits a stream (README, "API")
+        // The reserved seat never emits a stream (`compress` is
+        // `error.Unimplemented`), but this function is public and total: the
+        // seat reports the RFC's default-algorithm band, the same FLEVEL the
+        // default `.fast` level emits, so spelling it out is defined bytes —
+        // never `unreachable` (the M3 closing review found the UB).
+        .ratio => 2,
     };
     return flevel << 6 | fcheck(flevel);
 }
@@ -115,9 +120,7 @@ pub fn compress(
     // A body that compressed under the bound can still leave no room for the
     // trailer: report that before the overflowing write, never after.
     if (target.len - trailer_at < trailer_len) return error.BufferTooSmall;
-    var trailer: [trailer_len]u8 = undefined;
-    writeTrailer(&trailer, adler32.adler32(1, source));
-    fastmem.copy(u8, target[trailer_at..][0..trailer_len], &trailer);
+    writeTrailer(target[trailer_at..][0..trailer_len], adler32.adler32(1, source));
     return trailer_at + trailer_len;
 }
 
@@ -192,6 +195,20 @@ test "encode: FLEVEL follows the level bands" {
         try testing.expectEqual(@as(u8, 0), target[1] & 0x20);
         try testing.expect(len > 0);
     }
+}
+
+test "encode: the reserved seat's FLG is defined, never unreachable" {
+    // README, "API": `.ratio` is flate's reserved seat — `compress` is
+    // `error.Unimplemented` and never emits a stream. `flgFor` is public, so
+    // it is total: the seat's band is the default algorithm's (FLEVEL 2, the
+    // band `.fast` emits), and the pair still satisfies §2.2's FCHECK
+    // arithmetic. Found by the M3 closing review: `unreachable` here was UB
+    // in ReleaseFast through the public surface.
+    const flg = flgFor(.ratio);
+    try testing.expectEqual(@as(u8, 0x9c), flg);
+    const header = @as(u16, cmf) * 256 + @as(u16, flg);
+    try testing.expectEqual(@as(u16, 0), header % 31);
+    try testing.expectEqual(@as(u8, 0), flg & 0x20); // FDICT clear
 }
 
 test "encode: the ratio seat is unimplemented, never aliased" {

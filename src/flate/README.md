@@ -504,9 +504,11 @@ Where it updates:
 
 Set the field before the first byte is written or read; a hook set mid-stream
 sees only what follows it. The one-shot `encode.compress` /
-`decode.decompress` and the `streamAll` conveniences carry no hook: a
-container's one-shot hashes `source` (encode) or the decoded `target`
-(decode) directly, and its one-call pump builds the layer itself.
+`decode.decompress` and the `streamAll` conveniences carry no hook of their
+own: a container's one-shot encode hashes `source` directly, its one-shot
+decode runs the body through the streaming `Reader` — so the decode side
+hashes through the hook, never `target` — and its one-call pump builds the
+layer itself.
 
 Cost, stated plainly. Unset — the raw module's only use — the funnels pay a
 predictable null check per emitted block (Writer) and per window fill and

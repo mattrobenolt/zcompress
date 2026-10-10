@@ -115,10 +115,10 @@ pub fn adler32(adler: u32, bytes: []const u8) u32 {
         s1 %= base;
         s2 %= base;
     }
-    // The under-a-chunk remainder: the RFC's per-byte form, one mod at the
-    // end (the sums of under 16 bytes cannot reach the modulus twice...
-    // s2 can: 15 bytes of 0xff give s2 = 15·s1 + 255·120 ≈ 15·65735 + 30600,
-    // still far under 2^32 — one mod each suffices).
+    // The under-a-chunk remainder: the RFC's per-byte form, with both mods
+    // deferred to the end. Under 16 bytes cannot overflow the u32 sums: 15
+    // bytes of 0xff give s2 = 15·s1 + 255·120 ≈ 15·65735 + 30600, far under
+    // 2^32, so one mod each suffices.
     for (rest) |byte| {
         s1 +%= byte;
         s2 +%= s1;

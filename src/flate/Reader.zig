@@ -1096,13 +1096,13 @@ test "Reader: a corrupt stream fails closed and stays failed" {
     }
 }
 
-/// Stream everything from `r` through one flate `Reader` into `w`,
-/// returning the decoded bytes served. Consumes `r` exactly through the
+/// Stream everything from `in` through one flate `Reader` into `out`,
+/// returning the decoded bytes served. Consumes `in` exactly through the
 /// stream's end (the final partial byte included) — bytes after the stream
 /// are left unconsumed. The reader and its window live on this stack frame;
 /// zero allocation.
-pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!usize {
+pub fn streamAll(in: *Io.Reader, out: *Io.Writer) Io.Reader.StreamRemainingError!usize {
     var buf: Buffer = undefined;
-    var rr: Reader = .init(r, &buf);
-    return rr.reader.streamRemaining(w);
+    var rr: Reader = .init(in, &buf);
+    return rr.reader.streamRemaining(out);
 }

@@ -925,19 +925,19 @@ fn makeShape(gpa: std.mem.Allocator, shape: Shape, len: usize) ![]u8 {
     return buf;
 }
 
-/// Stream everything from `r` through one flate `Writer` into `w`,
-/// returning the bytes consumed and encoded. Consumes `r` exactly through
+/// Stream everything from `in` through one flate `Writer` into `out`,
+/// returning the bytes consumed and encoded. Consumes `in` exactly through
 /// its end, then finishes the stream (the `03 00` ending + flush). The
 /// writer and its window live on this stack frame; zero allocation.
 pub fn streamAll(
-    r: *Io.Reader,
-    w: *Io.Writer,
+    in: *Io.Reader,
+    out: *Io.Writer,
     options: encode.Options,
 ) Io.Reader.StreamRemainingError!usize {
     if (options.level == .ratio) return error.ReadFailed;
     var buf: Buffer = undefined;
-    var ww: Writer = .init(w, &buf, options);
-    const n = try r.streamRemaining(&ww.writer);
+    var ww: Writer = .init(out, &buf, options);
+    const n = try in.streamRemaining(&ww.writer);
     // The stream is not done until finish: the final partial block and the
     // `03 00` ending are load-bearing (README, "Divergences" T4).
     try ww.finish();

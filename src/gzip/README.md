@@ -34,10 +34,13 @@ section):
   CPython tolerates trailing zeros, libdeflate reports the member's end and
   leaves concatenation to the caller — `containers-notes.md §2.5` T2 and
   §4 OQ3 record all four; ours is the libdeflate boundary with the caller
-  loop's fail-closed header parse.) A zero-byte input is `error.Truncated`:
-  no member began. Go and CPython accept it as a zero-member file, the CLI
-  errors — the fail-closed reading, recorded in T2/OQ3.
-- **The container owns no buffers** (OQ5). The real memory is flate's:
+  loop's fail-closed header parse.) A zero-byte input is `error.Truncated`
+  for `Reader`, `streamMember`, and `decompress`: no member began.
+  `streamAll` is the walk's exception — a member that is not present at all
+  is the file's clean end, so it serves zero members without error. Go and
+  CPython accept the zero-byte file as a zero-member one, the CLI errors —
+  the fail-closed reading, recorded in T2/OQ3.
+- **The container owns no buffers** (OQ6). The real memory is flate's:
   `Writer.Buffer` (98,303 bytes) and `Reader.Buffer` (65,536 bytes), whose
   pointers the container hands to its internal flate layer. The container
   re-exports them under its own names and adds nothing of its own — a few
@@ -90,7 +93,7 @@ gzip.decode.DecompressError = flate.decode.DecompressError || error{
 };
 
 // The streaming Io layer. Writer.Buffer / Reader.Buffer are flate's buffer
-// types, re-exported: the container adds none (OQ5).
+// types, re-exported: the container adds none (OQ6).
 gzip.Writer.Buffer = flate.Writer.Buffer;  // 98,303 bytes: block + history
 gzip.Reader.Buffer = flate.Reader.Buffer;  // 65,536 bytes: the window
 var w: gzip.Writer = .init(out, &wbuf, .{}); // wbuf: gzip.Writer.Buffer
@@ -115,6 +118,33 @@ gzip.Reader.streamAll(in, out) error{ReadFailed, WriteFailed}!usize
 
 `Reader.streamMember` consumes one member; `Reader.streamAll` consumes
 every member `in` holds (the walk above).
+
+Beyond the four namespaces, the framing helpers the streaming layers are
+built from stay reachable, named, and stable (the flate precedent:
+`BitWriter`, `copyMatch`):
+
+- `gzip.encode.header_len` / `gzip.encode.trailer_len` — 10 and 8 (`§2.3`),
+  the fixed framing lengths `maxCompressedLength` builds on.
+- `gzip.encode.writeHeader(target, level)` / `writeTrailer(target, crc,
+  len)` — the deterministic 10-byte header (OQ7) and the 8-byte trailer
+  (`§2.3.1`), each into its exact pointer.
+- `gzip.encode.xflFor(level)` — the XFL band (`§2.3.1`), the one emitted
+  header field that varies by level.
+- `gzip.decode.HeaderParser` — the byte-fed header state machine both
+  layers share (`feed`/`done`; `§2.3.1`), with its `Stage` enum, the
+  `flg_ftext`/`flg_fhcrc`/`flg_fextra`/`flg_fname`/`flg_fcomment`/
+  `flg_reserved` bits, `name_comment_cap` (512, T7), and the `HeaderError`
+  set (`BadHeader`, `HeaderTooLong`, `WrongHeaderChecksum`) beside it.
+- `gzip.decode.checkTrailer(trailer, crc, len)` — the one trailer check
+  both layers report through (`WrongChecksum`, `WrongSize`, `§2.3.1`).
+- `gzip.decode.header_len` / `gzip.decode.trailer_len` — re-exported from
+  `encode.zig`, so a decoder-side caller need not reach across namespaces.
+
+They are public because the `Writer`/`Reader` framing is composed from them
+(the lazy header is `writeHeader`, the header parse is `HeaderParser`, the
+trailer check is `checkTrailer`), and the golden and fuzz lanes pin the same
+functions; the namespace stays the four barrels, and these are the named
+parts the barrels are built from.
 
 Caller-owned buffer types (exact pointers at init; both are flate's, named
 here for a self-contained surface):
@@ -145,9 +175,10 @@ Contracts, stated plainly:
   body, and it is the size mod 2^32 (`§2.3.1`), so it is exact only for
   members under 4 GiB. The caller sizes from out-of-band knowledge, or
   streams.
-- **Trailer location**: `decompress` routes the body through the streaming
-  reader over `Io.Reader.fixed(source[header_len..])`. The flate reader
-  consumes the input exactly through the body's last byte
+- **Trailer location**: `decompress` routes the whole member through the
+  streaming reader over `Io.Reader.fixed(source)`; the reader parses the
+  header itself, and the flate reader then consumes the input exactly
+  through the body's last byte
   (`src/flate/README.md`, "Streaming"), so the fixed reader's position
   afterwards is exactly the trailer — the exact-consumption contract this
   design was built on (OQ2). Bytes after the trailer are ignored by the
@@ -320,7 +351,7 @@ region of its own: decoded bytes are served straight out of flate's window
 block buffer (the caller's `Writer.Buffer`) — one region, one position, no
 staging copy.
 
-Buffer ownership, in full (OQ5):
+Buffer ownership, in full (OQ6):
 
 - `Writer.Buffer` and `Reader.Buffer` are flate's, re-exported: the
   container declares no buffer of its own. `Writer.init(output: *Io.Writer,
@@ -332,9 +363,10 @@ Buffer ownership, in full (OQ5):
 Semantics:
 
 - The header is written before the first compressed byte reaches `output`,
-  lazily: `init` cannot fail, so it writes nothing; the first write, flush,
-  or finish emits the 10-byte header first (Go's lazy-header shape,
-  `gzip.go`). The trailer is written by `finish`.
+  lazily: `init` cannot fail, so it writes nothing, and a write that fits
+  the buffer emits nothing; the first drain, flush, rebase, or `finish`
+  emits the 10-byte header first (Go's lazy-header shape, `gzip.go`). The
+  trailer is written by `finish`.
 - `finish()` flushes the buffered partial block and the deflate ending,
   writes CRC32 and ISIZE, and flushes `output`; it is terminal — the writer
   is poisoned afterwards, and a failed or finished writer reports
@@ -360,6 +392,10 @@ Semantics:
   the input position is the next member's first byte; the walk continues
   there until a member is not present (the file's clean end, zero members
   served), and garbage in a header's place fails `BadHeader`.
+- The reader's input must buffer at least 3 bytes — flate's rule
+  (`src/flate/README.md`, "Streaming"): a stored block's LEN/NLEN (`§3.2.4`)
+  or a Huffman code, plus the partial byte already consumed, must fit in the
+  input's buffer, or the input must end before then.
 - At the body's clean end the reader reads and verifies the trailer exactly
   once, and only then reports `error.EndOfStream` (sticky). A trailer
   mismatch is `error.ReadFailed` with `err` set to `WrongChecksum` /
@@ -414,10 +450,13 @@ is `containers-notes.md §5`:
 - `TestTruncatedStreams`, `TestIssue6550` (the 85.3-KB decompression-hang
   regression: must fail closed without hanging), `TestMultistreamFalse`,
   `TestNilStream` (the zero-member reading our `Truncated` decision answers).
-- **`gzip_test.go`** — `TestEmpty` pins the emitted-header policy on
-  readback (`Header{OS: 255}`); `TestRoundTrip` and `TestWriterFlush` are
-  round-trip fixtures; `TestLatin1RoundTrip` pins the FNAME/FCOMMENT byte
-  rules our decoder skips.
+- **`gzip_test.go`** — `TestEmpty`'s emitted-header policy (OS=255,
+  MTIME=0, FLG=0) is pinned on every emitted member by `golden.expectHeader`;
+  `TestWriterFlush`'s lazy-header shape is the `Writer` layer's own header
+  test (`Writer.zig`). `TestRoundTrip` and `TestLatin1RoundTrip` are not
+  ported: the round-trip coverage runs over the `gunzipTests` payloads
+  instead, and the FNAME/FCOMMENT byte rules ride the all-fields and
+  truncated-name/comment vectors.
 - **Zig 0.16 std's in-tree container tests** (MIT): the gzip stored, fixed,
   and dynamic "Hello world\n" members, "gzip header with name", and the
   **FHCRC member** (`FLG=0x12`, CRC16 `99 d6`) — ported as decoder goldens

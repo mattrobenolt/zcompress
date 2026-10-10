@@ -233,7 +233,12 @@ M3 — gzip + zlib. Containers over flate; crc32 and adler32 kernels; the
 PCLMULQDQ decision (study `std.crypto.ghash_polyval` first; no inline asm
 before a vector route is proven slower). `GzipWriter`/`GzipReader` over
 `std.Io`.
-Acceptance: gzip and zlib conformance green; a fleet run committed.
+Acceptance: gzip and zlib conformance green; a fleet run committed. The
+conformance half is green (`just gzip-oracle`, `just zlib-oracle`, and
+`just flate-oracle`); the fleet run is outstanding — `docs/results/` does
+not exist yet, and the fleet wave owns committing the run against the
+pinned competitors. M3 is not called shipped against the plan text until
+that run lands.
 
 M4 — zstd decoder. huff0, fse, block, and frame layers. A decode-side fleet
 run against zstd C, klauspost, and std.compress.zstd.

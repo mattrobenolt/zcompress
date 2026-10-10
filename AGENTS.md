@@ -28,6 +28,27 @@ it before you change a kernel or make a performance claim.
   fixtures across every layer's tests; `bench.zig` is the local benchmark;
   `oracle.zig` is the external-oracle harness behind `just flate-oracle`.
   Fuzz targets land in `fuzz.zig` (fuzz-engineer lane).
+- `src/gzip/`: gzip members (RFC 1952) over flate. `encode.zig` writes the
+  one-shot member — the deterministic 10-byte header, the CRC-32/ISIZE
+  trailer; `decode.zig` carries the header parser both layers share and the
+  trailer check; `Writer.zig` + `Reader.zig` are the streaming `Io` layer
+  (the lazy header, the member boundary, the multi-member `streamAll` walk —
+  see `src/gzip/README.md`, "Streaming"); `crc32.zig` is the slice-by-16
+  CRC-32 kernel behind the container's checksum state; `golden.zig` shares
+  the Go gzip fixtures across every layer's tests; `bench.zig` is the local
+  benchmark; `oracle.zig` is the external-oracle harness behind `just
+  gzip-oracle`; `common.zig` is the little-endian integer helper. Fuzz
+  targets land in `fuzz.zig` (fuzz-engineer lane).
+- `src/zlib/`: zlib streams (RFC 1950) over flate. `encode.zig` writes the
+  one-shot stream — the CMF/FLG header, the Adler-32 trailer; `decode.zig`
+  carries the header check, the trailer reader, and the trailer check both
+  layers share; `Writer.zig` + `Reader.zig` are the streaming `Io` layer —
+  see `src/zlib/README.md`, "Streaming"; `adler32.zig` is the vectorized
+  Adler-32 kernel behind the container's checksum state; `golden.zig` shares
+  the Go zlib fixtures across every layer's tests; `bench.zig` is the local
+  benchmark; `oracle.zig` is the external-oracle harness behind `just
+  zlib-oracle`; `common.zig` is the big-endian integer helper. Fuzz targets
+  land in `fuzz.zig` (fuzz-engineer lane).
 - `src/internal/`: the codec-agnostic shares (plan, "Architecture"): the
   sentinel test machinery and the reader lifecycle + generated vtable
   entries. Imports only `std` and `fastmem`; reached by relative import
@@ -70,6 +91,14 @@ it before you change a kernel or make a performance claim.
 - `just flate-oracle`: external-oracle conformance for flate — `python3
   zlib` raw, both directions (catches bit-packing bugs invisible to a
   self-round-trip; the layer is `scripts/flate_oracle.py`).
+- `just gzip-oracle`: external-oracle conformance for gzip — `python3 zlib`
+  (the wbits 31 wrapper), the CPython `gzip` module, and the gzip/gunzip
+  CLIs, both directions (plus FHCRC, the single-member boundary, and the
+  trailing-garbage pin; the layer is `scripts/gzip_oracle.py`).
+- `just zlib-oracle`: external-oracle conformance for zlib — `python3 zlib`
+  (wbits 15), both directions (plus the FDICT refusal, the T5 FCHECK=31
+  corner, and the exact stream boundary; the layer is
+  `scripts/zlib_oracle.py`).
 - `just bench [ARGS]`: local benchmarks (zig-benchmark). Local numbers are
   never quoted as claims.
 - `just example <codec> ...`: run a codec's example CLI (e.g. `just example

@@ -28,11 +28,12 @@ const encode = @import("encode.zig");
 const Reader = @import("Reader.zig");
 const golden = @import("golden.zig");
 
-/// RFC 1952 §2.3 — the fixed header's length: the 10 bytes of §2.3.1.
-pub const header_len = 10;
-
-/// RFC 1952 §2.3 — the trailer's length: CRC32 and ISIZE (`§2.3.1`).
-pub const trailer_len = 8;
+/// The framing lengths, defined with the emitter (`encode.zig`) and
+/// re-exported here: the decoder side reads them without reaching across
+/// namespaces. RFC 1952 §2.3 — the fixed header's 10 bytes (`§2.3.1`) and
+/// the trailer's CRC32 + ISIZE (`§2.3.1`).
+pub const header_len = encode.header_len;
+pub const trailer_len = encode.trailer_len;
 
 /// The FNAME/FCOMMENT NUL-scan cap (T7): Go's house rule (`gunzip.go:145`),
 /// not a spec rule — the RFC bounds nothing. At most this many bytes are
@@ -76,8 +77,6 @@ pub const flg_reserved = 0xe0;
 pub const HeaderParser = struct {
     /// The field being consumed, in `§2.3`'s order.
     stage: Stage = .fixed,
-    /// The 10 fixed header bytes (`§2.3.1`), as they arrive.
-    fixed: [header_len]u8 = undefined,
     /// The FLG byte: the optional-field presence bits (`§2.3.1`).
     flags: u8 = 0,
     /// Bytes of the current fixed-width field consumed (XLEN, FHCRC).
@@ -148,7 +147,6 @@ pub const HeaderParser = struct {
             },
             else => {},
         }
-        parser.fixed[parser.taken] = byte;
         parser.crc = crc32.crc32(parser.crc, bytes[0..1]);
         parser.taken += 1;
         if (parser.taken == header_len) parser.enterOptional();

@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !u8 {
     const args = try init.minimal.args.toSlice(arena);
     if (args.len < 3) {
         print("usage: gzip-oracle decode <member-file> <cap-bytes> > out\n", .{});
-        print("       gzip-oracle encode <input-file> > member\n", .{});
+        print("       gzip-oracle encode <input-file> [LEVEL] > member\n", .{});
         return 1;
     }
 

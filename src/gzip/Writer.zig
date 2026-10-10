@@ -3,7 +3,7 @@
 //!
 //! The real memory is flate's: the caller's `Writer.Buffer` is handed to the
 //! inner `flate.Writer`, and this writer's serving region is that block
-//! region — one region, one position, no staging copy (OQ5). The front's
+//! region — one region, one position, no staging copy (OQ6). The front's
 //! `Io.Writer` position is resynced into the codec at every entry (`commit`)
 //! and taken back after it (`adopt`), because `std.Io.Writer`'s fast paths
 //! copy into the region without calling here.
@@ -20,6 +20,8 @@ const std = @import("std");
 const Io = std.Io;
 const assert = std.debug.assert;
 const testing = std.testing;
+const DefaultPrng = std.Random.DefaultPrng;
+const print = std.debug.print;
 
 const fastmem = @import("fastmem");
 
@@ -32,7 +34,7 @@ const encode = @import("encode.zig");
 const golden = @import("golden.zig");
 
 /// The caller-provided buffer: flate's, re-exported — the container adds no
-/// buffer of its own (OQ5). `[max_block_size + history_len]u8`, 98303 bytes.
+/// buffer of its own (OQ6). `[max_block_size + history_len]u8`, 98303 bytes.
 pub const Buffer = flate.Writer.Buffer;
 
 /// Whether the fixed header has reached `output`: the header is lazy
@@ -181,20 +183,20 @@ fn rebase(w: *Io.Writer, preserve: usize, capacity: usize) Io.Writer.Error!void 
     self.adopt();
 }
 
-/// Stream everything from `r` through a stack-buffered `Writer` into `w`,
-/// returning the bytes consumed and encoded. Consumes `r` exactly through
+/// Stream everything from `in` through a stack-buffered `Writer` into `out`,
+/// returning the bytes consumed and encoded. Consumes `in` exactly through
 /// its end, then finishes the member (the deflate ending and the trailer are
 /// load-bearing). `.ratio` lands as `error.ReadFailed` upfront. Zero
 /// allocation.
 pub fn streamAll(
-    r: *Io.Reader,
-    w: *Io.Writer,
+    in: *Io.Reader,
+    out: *Io.Writer,
     options: encode.Options,
 ) Io.Reader.StreamRemainingError!usize {
     if (options.level == .ratio) return error.ReadFailed;
     var buffer: Buffer = undefined;
-    var ww: Writer = .init(w, &buffer, options);
-    const n = try r.streamRemaining(&ww.writer);
+    var ww: Writer = .init(out, &buffer, options);
+    const n = try in.streamRemaining(&ww.writer);
     try ww.finish();
     return n;
 }
@@ -302,7 +304,7 @@ test "Writer: incompressible input round-trips" {
     const gpa = testing.allocator;
     const source = try gpa.alloc(u8, 200_000);
     defer gpa.free(source);
-    var rng: std.Random.DefaultPrng = .init(0xC0FFEE);
+    var rng: DefaultPrng = .init(0xC0FFEE);
     for (source) |*byte| byte.* = rng.random().int(u8);
     try roundTrip(source);
 }
@@ -314,7 +316,7 @@ test "Writer: the trailer covers chunked writes with mid-stream flushes" {
     // must not drop, double, or reorder a byte.
     const gpa = testing.allocator;
     var source: [70_000]u8 = undefined;
-    var rng: std.Random.DefaultPrng = .init(0x5EED);
+    var rng: DefaultPrng = .init(0x5EED);
     for (&source) |*byte| byte.* = rng.random().int(u8);
 
     var out: Io.Writer.Allocating = .init(gpa);
@@ -430,7 +432,7 @@ test "Writer: random write machinery sequences stay correct" {
     // with splat, partial straddling takes, direct-slice writes onto a full
     // region).
     const gpa = testing.allocator;
-    var rng: std.Random.DefaultPrng = .init(99);
+    var rng: DefaultPrng = .init(99);
     const rand = rng.random();
 
     var iter: usize = 0;
@@ -490,7 +492,7 @@ test "Writer: random write machinery sequences stay correct" {
         try golden.expectHeader(out.written(), encode.xflFor(.fast));
         try golden.expectTrailer(out.written(), expect.items);
         decodeMember(out.written(), expect.items) catch |err| {
-            std.debug.print("\nFAIL: iter {d}: {s}\n", .{ iter, @errorName(err) });
+            print("\nFAIL: iter {d}: {s}\n", .{ iter, @errorName(err) });
             return err;
         };
     }
@@ -505,7 +507,7 @@ test "Writer: the golden payloads encode to decodable members" {
             else => continue,
         };
         roundTrip(source) catch |err| {
-            std.debug.print("\nFAIL ({s}): {s}\n", .{ tc.desc, @errorName(err) });
+            print("\nFAIL ({s}): {s}\n", .{ tc.desc, @errorName(err) });
             return err;
         };
     }
@@ -515,7 +517,7 @@ test "Writer: the golden payloads encode to decodable members" {
             else => continue,
         };
         roundTrip(source) catch |err| {
-            std.debug.print("\nFAIL ({s}): {s}\n", .{ tc.desc, @errorName(err) });
+            print("\nFAIL ({s}): {s}\n", .{ tc.desc, @errorName(err) });
             return err;
         };
     }

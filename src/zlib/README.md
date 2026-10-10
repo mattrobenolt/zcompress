@@ -81,7 +81,7 @@ zlib.decode.DecompressError = flate.decode.DecompressError || error{
 };
 
 // The streaming Io layer. Writer.Buffer / Reader.Buffer are flate's buffer
-// types, re-exported: the container adds none (OQ5).
+// types, re-exported: the container adds none (OQ6).
 zlib.Writer.Buffer = flate.Writer.Buffer;  // 98,303 bytes: block + history
 zlib.Reader.Buffer = flate.Reader.Buffer;  // 65,536 bytes: the window
 var w: zlib.Writer = .init(out, &wbuf, .{}); // wbuf: zlib.Writer.Buffer
@@ -126,9 +126,10 @@ pattern book"). Contracts, stated plainly:
   overflowing write, never a truncated success. **The format carries no
   decoded size** — ADLER32 is the whole trailer — so the caller sizes from
   out-of-band knowledge, or streams.
-- **Trailer location**: `decompress` routes the body through the streaming
-  reader over `Io.Reader.fixed(source[header_len..])`. The flate reader
-  consumes the input exactly through the body's last byte
+- **Trailer location**: `decompress` routes the whole stream through the
+  streaming reader over `Io.Reader.fixed(source)`; the reader checks the
+  2-byte header itself, and the flate reader then consumes the input
+  exactly through the body's last byte
   (`src/flate/README.md`, "Streaming"), so the fixed reader's position
   afterwards is exactly the ADLER32 — the exact-consumption contract this
   design was built on (OQ2). Bytes after ADLER32 are ignored by the
@@ -204,9 +205,18 @@ FLEVEL by level, the reference lineage's bands (C zlib's mapping,
 oracle-verified in `containers-notes.md §5.5`: {0,1}→0, {2-5}→1, {6,-1}→2,
 {7-9}→3): `.@"0"` and `.@"1"` → 0; `.@"2"` through `.@"5"` → 1; `.fast` and
 `.@"6"` → 2; `.@"7"` through `.@"9"` → 3. `.ratio` is unimplemented and
-emits no stream. The field is informational and the band reports the
-requested level; flate's numeric levels all tune to the fast encoder today
-(flate README), which its own documentation states.
+`compress` never emits a stream for it, but `flgFor` is public and total:
+the reserved seat reports band 2, the default algorithm's (`§2.2`), the
+same FLEVEL `.fast` emits. The field is informational and the band reports
+the requested level; flate's numeric levels all tune to the fast encoder
+today (flate README), which its own documentation states.
+
+FLEVEL's values are the RFC's own (`§2.2`): 0 "fastest algorithm", 1 "fast
+algorithm", 2 "default algorithm", 3 "maximum compression". The band is
+informational, and the two containers name the same `.fast` level
+differently on the wire — zlib's FLEVEL 2 calls it the default algorithm
+(this module's default level), gzip's XFL 4 calls it the fastest; both
+emissions are legal, and neither decoder may act on the field (`§2.3`).
 
 A conformant decoder's obligations, all enforced here:
 
@@ -300,6 +310,11 @@ pattern book"). What differs:
 - `zlib.Writer.init(..., .{ .level = .ratio })` poisons the interface
   (writes and `finish` report `error.WriteFailed`), and `Writer.streamAll`
   returns `error.ReadFailed` upfront — flate's reserved-seat behavior.
+- The reader's input must buffer at least 3 bytes — flate's rule
+  (`src/flate/README.md`, "Streaming"): a stored block's LEN/NLEN
+  (`rfc1951-deflate.txt §3.2.4`) or a Huffman code, plus the partial byte
+  already consumed, must fit in the input's buffer, or the input must end
+  before then.
 
 Files (the intended layout; the implementation lanes may split further):
 `root.zig` (public surface), `encode.zig` (stream emission), `decode.zig`
@@ -313,6 +328,34 @@ An example CLI (`examples/zlib.zig`, `zig build example-zlib -- encode
 README.md > out`) is a thin streaming pump over this surface, the same shape
 as snappy's and flate's.
 
+Beyond the four namespaces, the framing helpers the streaming layers are
+built from stay reachable, named, and stable (the flate precedent:
+`BitWriter`, `copyMatch`):
+
+- `zlib.encode.cmf` — the fixed CMF byte, 0x78 (CM=8, CINFO=7; `§2.2`).
+- `zlib.encode.header_len` / `zlib.encode.trailer_len` — 2 and 4 (`§2.2`),
+  the fixed framing lengths `maxCompressedLength` builds on.
+- `zlib.encode.flgFor(level)` / `writeHeader(target, level)` /
+  `writeTrailer(target, adler)` — the FLEVEL band + minimal FCHECK (`§2.2`),
+  the deterministic 2-byte header (OQ7), and the 4-byte trailer, each into
+  its exact pointer.
+- `zlib.decode.checkHeader(cmf, flg)` — the header arithmetic both layers
+  share (CM, CINFO, FCHECK, the FDICT refusal; `§2.2`, `§2.3`), with the
+  `flg_fdict` bit and the `HeaderError` set (`BadHeader`,
+  `DictionaryRequired`) beside it.
+- `zlib.decode.readExact(input, target)` — the byte-exact reader the header
+  and trailer both use (a short input is `Truncated`).
+- `zlib.decode.checkTrailer(trailer, adler)` — the one trailer check both
+  layers report through (`WrongChecksum`, `§2.2`, `§2.3`).
+- `zlib.decode.header_len` / `zlib.decode.trailer_len` — re-exported from
+  `encode.zig`, so a decoder-side caller need not reach across namespaces.
+
+They are public because the `Writer`/`Reader` framing is composed from them
+(the lazy header is `writeHeader`, the header check is `checkHeader` +
+`readExact`, the trailer read is `readExact` + `checkTrailer`), and the
+golden and fuzz lanes pin the same functions; the namespace stays the four
+barrels, and these are the named parts the barrels are built from.
+
 ## Testing & golden vectors
 
 The conformance bar, the porting discipline, the sentinel overrun rule, and
@@ -320,17 +363,20 @@ the fuzz lane are the gzip sibling's (`src/gzip/README.md`, "Testing & golden
 vectors"; `src/internal/README.md`). The zlib-specific inventory
 (`containers-notes.md §5`):
 
-- **golang/go `src/compress/zlib/reader_test.go` `zlibTests` (11 vectors)** —
+- **golang/go `src/compress/zlib/reader_test.go` `zlibTests` (14 vectors)** —
   the primary zlib conformance table, whose own comment says the golden
-  bytes came from the C reference's `zpipe.c`: truncated empty / truncated
-  dict / truncated checksum → `error.Truncated`; the empty stream
+  bytes came from the C reference's `zpipe.c`: truncated empty →
+  `error.Truncated`; Go's two FDICT-truncated vectors ("truncated dict",
+  "truncated checksum") → `DictionaryRequired` here (the refusal comes
+  before any DICTID byte); the empty stream
   (`78 9c 03 00 00 00 00 01`); "goodbye, world"; bad CINFO (`88 98`) →
   `BadHeader`; **bad FCHECK (`78 9f`) → `BadHeader`**; bad checksum →
   `WrongChecksum`; not-enough-data; **excess data silently ignored** (ZD7's
   boundary); the **dictionary** vector (`78 bb` + DICTID + a
   dict-compressed body) and the **wrong dictionary** vector → both
   `DictionaryRequired` here (one error name covers "no dictionary" and
-  "wrong dictionary", as Go's `ErrDictionary` does).
+  "wrong dictionary", as Go's `ErrDictionary` does); and the two truncated
+  amid-raw/fixed-block streams → `error.Truncated`.
 - **The T5 corner**: a `78 3f`-headed stream (FCHECK=31, C zlib's
   FDICT+FLEVEL-0 emission) must pass FCHECK validation and land on
   `DictionaryRequired`, never `BadHeader` — the vector that proves the check

@@ -389,14 +389,14 @@ fn countBlocks(stream: []const u8) usize {
     return n;
 }
 
-/// Stream everything from `r` through one snappy `Writer` into `w`,
-/// returning the bytes consumed and encoded. Consumes `r` exactly through
+/// Stream everything from `in` through one snappy `Writer` into `out`,
+/// returning the bytes consumed and encoded. Consumes `in` exactly through
 /// its end, then finishes the stream (the final partial block + flush). The
 /// writer and its buffer live on this stack frame; zero allocation.
-pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!usize {
+pub fn streamAll(in: *Io.Reader, out: *Io.Writer) Io.Reader.StreamRemainingError!usize {
     var buf: Buffer = undefined;
-    var ww: Writer = .init(w, &buf);
-    const n = try r.streamRemaining(&ww.writer);
+    var ww: Writer = .init(out, &buf);
+    const n = try in.streamRemaining(&ww.writer);
     // The stream is not done until finish: the final partial block and the
     // framing's end are load-bearing (README, "Streaming").
     try ww.finish();

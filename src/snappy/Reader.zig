@@ -452,12 +452,12 @@ fn roundTrip(src: []const u8) !void {
     try testing.expectEqualSlices(u8, src, plain.written());
 }
 
-/// Stream everything from `r` through one snappy `Reader` into `w`,
-/// returning the decoded bytes served. Consumes `r` exactly through the
+/// Stream everything from `in` through one snappy `Reader` into `out`,
+/// returning the decoded bytes served. Consumes `in` exactly through the
 /// stream's end. The reader and its buffer live on this stack frame; zero
 /// allocation.
-pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!usize {
+pub fn streamAll(in: *Io.Reader, out: *Io.Writer) Io.Reader.StreamRemainingError!usize {
     var buf: Buffer = undefined;
-    var rr: Reader = .init(r, &buf);
-    return rr.reader.streamRemaining(w);
+    var rr: Reader = .init(in, &buf);
+    return rr.reader.streamRemaining(out);
 }

@@ -22,6 +22,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const DefaultPrng = std.Random.DefaultPrng;
+
 const fastmem = @import("fastmem");
 
 const bench = @import("benchmark");
@@ -188,7 +189,7 @@ pub fn benchmarkZlibRatio(b: *bench.B) !void {
 }
 
 /// The paired raw-flate encoder over the same corpus and level: the delta
-/// against `BenchmarkCompress` is the container's framing and checksum.
+/// against `BenchmarkZlibCompress` is the container's framing and checksum.
 pub fn benchmarkFlateCompress(b: *bench.B) !void {
     inline for (.{ Size.half, Size.block }) |size| {
         inline for (.{ Shape.text, Shape.random, Shape.html, Shape.rle, Shape.mixed }) |shape| {
@@ -212,7 +213,7 @@ pub fn benchmarkFlateCompress(b: *bench.B) !void {
 }
 
 /// The paired raw-flate decoder over the same corpus and level: the delta
-/// against `BenchmarkDecompress` is the trailer verification (the Adler-32
+/// against `BenchmarkZlibDecompress` is the trailer verification (the Adler-32
 /// rides flate's window fill; there is no second pass).
 pub fn benchmarkFlateDecompress(b: *bench.B) !void {
     inline for (.{ Size.half, Size.block }) |size| {

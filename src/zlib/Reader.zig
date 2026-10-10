@@ -12,21 +12,24 @@
 //!
 //! The window is flate's, re-exported: the caller's `Reader.Buffer` is handed
 //! to the inner `flate.Reader`, and this reader's serving position is that
-//! window's position — one region, one position, no staging copy (OQ5). The
+//! window's position — one region, one position, no staging copy (OQ6). The
 //! decoded bytes are folded into the container's Adler-32 by flate's checksum
 //! hook as they enter the window (OQ1), so the trailer check at the clean end
 //! hashes nothing again.
 
 const std = @import("std");
 const Io = std.Io;
+const mem = std.mem;
 const assert = std.debug.assert;
 const testing = std.testing;
+const DefaultPrng = std.Random.DefaultPrng;
+const print = std.debug.print;
 
 const fastmem = @import("fastmem");
 
 const flate = @import("../flate/root.zig");
 /// The caller-provided window: flate's, re-exported — the container adds no
-/// buffer of its own (OQ5). `[2 * history_len]u8`, 64 KiB.
+/// buffer of its own (OQ6). `[2 * history_len]u8`, 64 KiB.
 pub const Buffer = flate.Reader.Buffer;
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
@@ -120,7 +123,7 @@ fn fail(r: *Reader, err: Error) Io.Reader.Error {
 fn fillStream(r: *Reader) Error!usize {
     if (r.header == .pending) try r.readHeader();
     // The window is flate's: hand it the consumer's position, fill, and take
-    // the (possibly slid) position back — one region, one position (OQ5).
+    // the (possibly slid) position back — one region, one position (OQ6).
     r.inner.reader.seek = r.reader.seek;
     r.inner.reader.end = r.reader.end;
     r.inner.reader.fillMore() catch |err| switch (err) {
@@ -194,14 +197,15 @@ fn rebase(r: *Reader, capacity: usize) Io.Reader.RebaseError!void {
     assert(r.reader.buffer.len - r.reader.seek >= capacity);
 }
 
-/// Stream one complete zlib stream from `r` through a stack-buffered `Reader`
-/// into `w`, returning the decoded bytes served. Consumes `r` exactly through
-/// the stream's last trailer byte; bytes after it are left unconsumed
-/// (README, "Streaming"). Zero allocation: the window is a stack local.
-pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!usize {
+/// Stream one complete zlib stream from `in` through a stack-buffered
+/// `Reader` into `out`, returning the decoded bytes served. Consumes `in`
+/// exactly through the stream's last trailer byte; bytes after it are left
+/// unconsumed (README, "Streaming"). Zero allocation: the window is a stack
+/// local.
+pub fn streamAll(in: *Io.Reader, out: *Io.Writer) Io.Reader.StreamRemainingError!usize {
     var buffer: Buffer = undefined;
-    var rr: Reader = .init(r, &buffer);
-    return rr.reader.streamRemaining(w);
+    var rr: Reader = .init(in, &buffer);
+    return rr.reader.streamRemaining(out);
 }
 
 // ---------------------------------------------------------------------------
@@ -210,15 +214,10 @@ pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!us
 // Every decode is sentinel-checked.
 // ---------------------------------------------------------------------------
 
-/// Pump `r` into `w` until the clean end of stream.
-fn pumpInto(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!void {
-    _ = try r.streamRemaining(w);
-}
-
 /// Decode `r` into `target` through a fixed writer, returning the length.
 fn decodeInto(r: *Io.Reader, target: []u8) !usize {
     var w: Io.Writer = .fixed(target);
-    try pumpInto(r, &w);
+    _ = try r.streamRemaining(&w);
     return w.end;
 }
 
@@ -265,7 +264,7 @@ fn roundTrip(source: []const u8) !void {
 
 test "Reader: the buffer type is flate's, re-exported" {
     // README, "Caller-owned buffer types": `Reader.Buffer` is
-    // `flate.Reader.Buffer` — 2 * history_len, 64 KiB (OQ5).
+    // `flate.Reader.Buffer` — 2 * history_len, 64 KiB (OQ6).
     try testing.expectEqual(@as(usize, 65536), @sizeOf(Buffer));
     try testing.expect(Buffer == flate.Reader.Buffer);
     try testing.expectEqual(@as(usize, 98303), @sizeOf(Writer.Buffer));
@@ -277,10 +276,10 @@ test "Reader: the error set mirrors DecompressError minus BufferTooSmall" {
     // `ReadFailed`/`EndOfStream` and the contiguity cap's `StreamTooLong`.
     const mine = @typeInfo(Error).error_set.?;
     for (@typeInfo(decode.DecompressError).error_set.?) |want| {
-        if (std.mem.eql(u8, want.name, "BufferTooSmall")) continue;
+        if (mem.eql(u8, want.name, "BufferTooSmall")) continue;
         var found = false;
         for (mine) |entry| {
-            if (std.mem.eql(u8, entry.name, want.name)) found = true;
+            if (mem.eql(u8, entry.name, want.name)) found = true;
         }
         try testing.expect(found);
     }
@@ -305,18 +304,18 @@ test "Reader: multi-block inputs round-trip" {
     for (sizes) |len| {
         const source = try gpa.alloc(u8, len);
         defer gpa.free(source);
-        var rng: std.Random.DefaultPrng = .init(0xC0FFEE);
+        var rng: DefaultPrng = .init(0xC0FFEE);
         for (source, 0..) |*byte, i| {
             byte.* = if (i % 3 == 0) @truncate(i / 7) else rng.random().int(u8);
         }
         roundTrip(source) catch |err| {
-            std.debug.print("\nFAIL: len {d}: {s}\n", .{ len, @errorName(err) });
+            print("\nFAIL: len {d}: {s}\n", .{ len, @errorName(err) });
             return err;
         };
     }
     // Incompressible input: every block is stored (`§3.2.4`), so the
     // stored-block resume across window slides runs.
-    var rng: std.Random.DefaultPrng = .init(0x5EED);
+    var rng: DefaultPrng = .init(0x5EED);
     const random_bytes = try gpa.alloc(u8, 1 << 20);
     defer gpa.free(random_bytes);
     for (random_bytes) |*byte| byte.* = rng.random().int(u8);
@@ -339,7 +338,7 @@ test "Reader: the golden table decodes through the streaming layer" {
             .ok => |want| {
                 sentinel.fill(target);
                 const n = decodeInto(&r.reader, target) catch |err| {
-                    std.debug.print("\nFAIL ({s}): {s}\n", .{ tc.desc, @errorName(err) });
+                    print("\nFAIL ({s}): {s}\n", .{ tc.desc, @errorName(err) });
                     return err;
                 };
                 try testing.expectEqual(want.len, n);
@@ -367,13 +366,13 @@ test "Reader: the golden table decodes through the streaming layer" {
 /// detail (when the case pins one) sticky in `err`.
 fn expectStreamFailure(r: *Reader, want: ?decode.DecompressError) !void {
     var sink: Io.Writer.Discarding = .init(&.{});
-    try testing.expectError(error.ReadFailed, pumpInto(&r.reader, &sink.writer));
+    try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&sink.writer));
     if (want) |detail| try testing.expectEqual(detail, r.err.?);
 }
 
 /// Decode `source` with a fresh reader and check the boundary outcome: the
 /// caller-loop shape (a fresh `Reader` per stream).
-fn checkAtBoundary(gpa: std.mem.Allocator, source: []const u8, expect: golden.Expect) !void {
+fn checkAtBoundary(gpa: mem.Allocator, source: []const u8, expect: golden.Expect) !void {
     const target = try gpa.alloc(u8, 256 + @as(usize, sentinel.len));
     defer gpa.free(target);
     sentinel.fill(target);
@@ -432,7 +431,7 @@ test "Reader: garbage in a stream's place fails closed" {
     var fixed_in: Io.Reader = .fixed(garbage);
     var r: Reader = .init(&fixed_in, &rbuf);
     var sink: Io.Writer.Discarding = .init(&.{});
-    try testing.expectError(error.ReadFailed, pumpInto(&r.reader, &sink.writer));
+    try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&sink.writer));
     try testing.expectEqual(Error.BadHeader, r.err.?);
     // The failure is sticky.
     try testing.expectError(error.ReadFailed, r.reader.stream(&sink.writer, .unlimited));
@@ -450,7 +449,7 @@ test "Reader: the dictionary refusal is sticky and before any body byte" {
     var fixed_in: Io.Reader = .fixed(source);
     var r: Reader = .init(&fixed_in, &rbuf);
     var sink: Io.Writer.Discarding = .init(&.{});
-    try testing.expectError(error.ReadFailed, pumpInto(&r.reader, &sink.writer));
+    try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&sink.writer));
     try testing.expectEqual(Error.DictionaryRequired, r.err.?);
     // Exactly the two header bytes were consumed; the DICTID and body stay.
     try testing.expectEqual(@as(usize, decode.header_len), fixed_in.seek);
@@ -478,7 +477,7 @@ test "Reader: a corrupt trailer fails at the clean end, stickily" {
         var r: Reader = .init(&fixed_in, &rbuf);
         var out: Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
-        try testing.expectError(error.ReadFailed, pumpInto(&r.reader, &out.writer));
+        try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&out.writer));
         try testing.expectEqual(Error.WrongChecksum, r.err.?);
         // The decoded bytes are still served (the check is at the end), but
         // no clean end is reported.
@@ -544,7 +543,7 @@ test "Reader: a truncated stream is Truncated at every prefix" {
         var r: Reader = .init(&fixed_in, &rbuf);
         var out: Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
-        try testing.expectError(error.ReadFailed, pumpInto(&r.reader, &out.writer));
+        try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&out.writer));
         try testing.expectEqual(Error.Truncated, r.err.?);
     }
 }
@@ -556,7 +555,7 @@ test "Reader: a contiguous request past the window fails closed" {
     const gpa = testing.allocator;
     const source = try gpa.alloc(u8, 200_000);
     defer gpa.free(source);
-    var rng: std.Random.DefaultPrng = .init(0xBEEF);
+    var rng: DefaultPrng = .init(0xBEEF);
     for (source, 0..) |*byte, i| byte.* = @truncate(i / 7 +% rng.random().int(u8));
     var stream: Io.Writer.Allocating = .init(gpa);
     defer stream.deinit();

@@ -1,7 +1,8 @@
 //! The gzip checksum state over a slice-by-16 CRC-32 kernel.
 //!
-//! RFC 1952 §2.3.3 names "the CRC-32 algorithm used in the ISO 3309 standard"
-//! (reflected polynomial 0xEDB88320, with the full pre/post-conditioning).
+//! RFC 1952 §2.3.1 names "the CRC-32 algorithm used in the ISO 3309 standard"
+//! (reflected polynomial 0xEDB88320, with the full pre/post-conditioning;
+//! §8 is the appendix's sample code, "not part of the specification per se").
 //! The kernel here is the slice-by-16 table method — sixteen interleaved
 //! 256-entry tables, sixteen independent table loads per sixteen bytes — the
 //! portable table shape (slice-by-8 is libdeflate's scalar default,
@@ -35,7 +36,7 @@ const flate = @import("../flate/root.zig");
 const common = @import("common.zig");
 const readInt = common.readInt;
 
-/// The reflected polynomial (§2.3.3's ISO 3309 CRC-32), bit-reversed for the
+/// The reflected polynomial (§2.3.1's ISO 3309 CRC-32), bit-reversed for the
 /// LSB-first shift.
 const poly: u32 = 0xEDB8_8320;
 
@@ -141,6 +142,17 @@ pub const Checksum = struct {
     }
 };
 
+/// Fold `bytes` into `crc` (a `final()` digest, the initial value 0) and
+/// return the new digest: the libdeflate `crc32(crc, bytes)` shape the
+/// one-shot paths use. The conditioning is inside (a state continuation on
+/// the kernel's raw state, not a re-fold of the digest), so the identity
+/// `crc32(0, b) == Crc32.hash(b)` holds and `crc32(crc, "") == crc`.
+pub fn crc32(crc: u32, bytes: []const u8) u32 {
+    // The digest is the complemented raw state, so the raw state behind a
+    // digest `d` is `d ^ 0xffff_ffff` — complement in, fold, complement out.
+    return fold(crc ^ 0xffff_ffff, bytes) ^ 0xffff_ffff;
+}
+
 // ---------------------------------------------------------------------------
 // Tests. Spec: docs/research/specs/rfc1952-gzip.txt §8 (the sample table and
 // update), §2.3.1 (the trailer value). std's `Crc32` is the reference oracle
@@ -174,7 +186,7 @@ test "crc32: the empty payload is the RFC's empty-CRC value" {
 test "crc32: incremental runs equal one pass" {
     // The streaming layers fold runs as bytes cross the codec boundary
     // (OQ1): the digest must be independent of where the runs are cut —
-    // including cuts inside an eight-byte slice.
+    // including cuts inside a sixteen-byte slice.
     const bytes = "the quick brown fox jumps over the lazy dog. " ** 20;
     const whole = Crc32.hash(bytes);
     try testing.expectEqual(whole, crc32(0, bytes));
@@ -208,15 +220,4 @@ test "crc32: a long fold agrees with std" {
         Crc32.hash(bytes),
         crc32(crc32(0, bytes[0..1000]), bytes[1000..]),
     );
-}
-
-/// Fold `bytes` into `crc` (a `final()` digest, the initial value 0) and
-/// return the new digest: the libdeflate `crc32(crc, bytes)` shape the
-/// one-shot paths use. The conditioning is inside (a state continuation on
-/// the kernel's raw state, not a re-fold of the digest), so the identity
-/// `crc32(0, b) == Crc32.hash(b)` holds and `crc32(crc, "") == crc`.
-pub fn crc32(crc: u32, bytes: []const u8) u32 {
-    // The digest is the complemented raw state, so the raw state behind a
-    // digest `d` is `d ^ 0xffff_ffff` — complement in, fold, complement out.
-    return fold(crc ^ 0xffff_ffff, bytes) ^ 0xffff_ffff;
 }

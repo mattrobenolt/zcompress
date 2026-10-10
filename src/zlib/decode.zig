@@ -23,11 +23,12 @@ const encode = @import("encode.zig");
 const Reader = @import("Reader.zig");
 const golden = @import("golden.zig");
 
-/// RFC 1950 §2.2 — the header's length: CMF and FLG.
-pub const header_len = 2;
-
-/// RFC 1950 §2.2 — the trailer's length: ADLER32.
-pub const trailer_len = 4;
+/// The framing lengths, defined with the emitter (`encode.zig`) and
+/// re-exported here: the decoder side reads them without reaching across
+/// namespaces. RFC 1950 §2.2 — the header's 2 bytes (CMF and FLG) and the
+/// trailer's ADLER32.
+pub const header_len = encode.header_len;
+pub const trailer_len = encode.trailer_len;
 
 /// The one-shot decoder's error set (README, "API"): flate's decode detail
 /// set plus this module's header and trailer entries. `BufferTooSmall` is
