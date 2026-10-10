@@ -53,12 +53,16 @@ Codecs, one at a time, each shippable alone:
 2. flate — fast encoder plus full inflate. The core value. (M2)
 3. gzip + zlib — containers over flate, plus checksum kernels. (M3)
 4. zstd — decoder first, then the fast encoder. (M4, M5)
-5. lzw — both directions, the Go stdlib formats. (M6)
+5. brotli — decoder first, RFC 7932. (M6)
 
 Order rationale: snappy is nearly free and calibrates the whole measurement
 pipeline. flate is the biggest standalone win and unblocks two containers.
-zstd is the largest surface, so it splits decoder-first. lzw is the smallest
-value and the smallest effort, so it goes last.
+zstd is the largest surface, so it splits decoder-first. brotli goes last:
+the HTTP content-encoding codec (the practical surface LZW never had — its
+only real users are legacy TIFF/PDF/GIF), decoder-first like zstd because
+the format is a second large surface (context modeling, the static
+dictionary, two LZ77+Huffman layers). LZW is dropped: no practical use
+cases for it here.
 
 ## Architecture
 
@@ -243,8 +247,10 @@ run against zstd C, klauspost, and std.compress.zstd.
 Acceptance: zstd CLI conformance green; amplification-limit tests green; a
 fleet run committed.
 
-M5 — zstd encoder, fast level. M6 — lzw (the TIFF 6.0 and PDF 32000
-variants; vendor those spec sections at M6).
+M5 — zstd encoder, fast level. M6 — brotli, decoder first (RFC 7932 —
+vendor it at M6; the google/brotli C reference is the oracle lane and the
+strongest-native competitor; the static dictionary is a sizing decision the
+M6 research owns).
 
 ## Decisions made
 
