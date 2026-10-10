@@ -1,7 +1,8 @@
-//! The zstd golden fixtures the entropy layers' tests read: `§3.1.1.3.2.2`'s
-//! predefined distributions, Appendix A's decoding tables, and the real
-//! frames' table descriptions the kernels were validated against. Shared by
-//! every layer's tests (the flate/gzip `golden.zig` shape).
+//! The zstd golden fixtures every layer's tests read: `§3.1.1.3.2.2`'s
+//! predefined distributions, Appendix A's decoding tables, the real frames'
+//! table descriptions the kernels were validated against, and the whole
+//! frames the block and frame layers walk. Shared by every layer's tests (the
+//! flate/gzip `golden.zig` shape).
 //!
 //! Provenance, so every fixture can be re-derived:
 //!
@@ -733,3 +734,171 @@ pub const frame_empty_compressed = hex("28b52ffd0048050000");
 
 /// A 1-byte Block_Header — the input ends inside the frame (`§3.1.1.2`), the CLI exits 1.
 pub const frame_truncated_header = hex("28b52ffd004801");
+
+/// The frame layer's fixtures: hand-built frames for every Frame_Header corner of
+/// `§3.1.1.1`, the checksum trailer of `§3.1.1`, skippable frames of `§3.1.2`, and one real
+/// multi-block frame from the pinned CLI. Each was run through the pinned zstd CLI v1.5.7 and
+/// its verdict recorded: `zstd -d -c` decodes the good ones byte-exact, `zstd -t` verifies the
+/// checksummed ones (the C's XXH64 against std's, through the trailer), and `zstd -d` exits 1
+/// on every negative corner. The generator is the block fixtures' Python harness extended with
+/// the `§3.1.1.1` descriptor forms; the bytes below are its output, not a hand transcription.
+///
+/// The groups:
+///
+/// - **The descriptor forms** (`frame_fcs1`/`frame_fcs2`/`frame_fcs2_single_segment`/`frame_fcs4`/
+///   `frame_fcs8`): FCS_Field_Size 1/2/4/8 (`§3.1.1.1.1.1`, Table 4), the 2-byte form's +256
+///   offset (`§3.1.1.1.4`), and Single_Segment_Flag's Window_Size = Frame_Content_Size
+///   (`§3.1.1.1.1.2`). Each carries the smallest block its declared window allows.
+/// - **The flag corners** (`frame_unused_bit`, `frame_reserved_bit`, `frame_dictionary_id*`):
+///   descriptor bit 4 accepted and never interpreted (`§3.1.1.1.1.3`; the CLI exits 0), bit 3
+///   refused (`§3.1.1.1.1.4`; the CLI exits 1 "Unsupported frame parameter"), and
+///   Dictionary_ID_Flag refused at the first ID byte (`§3.1.1.1.3`; the CLI exits 1 "Dictionary
+///   mismatch" — with the ID byte present and, in `frame_dictionary_id_truncated`, without it).
+/// - **The checksum trailer** (`frame_checksum`, `frame_checksum_empty`, `frame_checksum_corrupt`,
+///   `frame_checksum_truncated`, `frame_checksum_multi`): the low 4 bytes of `XXH64(decoded, 0)`,
+///   little-endian (`§3.1.1`). The trailers are the C library's own values — `zstd -t` verifies
+///   each good one and fails the corrupt one with "Restored data doesn't match checksum".
+///   `frame_checksum_multi` is the CLI's `zstd -3` of `frame_checksum_multi_text` repeated 3000
+///   times: 135000 bytes over two compressed blocks, single-segment, FCS 135000, trailer
+///   `23 6b a1 cc`.
+/// - **Frame_Content_Size as a check** (`frame_fcs_short`, `frame_fcs_long`, `frame_fcs_max`):
+///   the same 8-byte block with a 4- and a 12-byte declaration, and the 8-byte form's maximum
+///   (`§3.1.1.1.4`; the CLI exits 1 on the first two and accepts the last as its
+///   `ZSTD_CONTENTSIZE_UNKNOWN` sentinel — the recorded divergence beside the fixture).
+/// - **The window/block coupling** (`frame_single_segment_oversize`): a single-segment frame
+///   whose FCS — hence Window_Size — is smaller than its block (`§3.1.1.2.4`, T7; the CLI
+///   exits 1 "Src size is incorrect").
+/// - **The boundary set** (`frame_trailing_garbage`, `frame_two_frames`): bytes after a complete
+///   frame. The CLI fails the first ("unsupported format") and decodes both frames of the
+///   second; the one-shot's rule is the M3 member boundary — one frame by exact consumption,
+///   trailing bytes ignored (T10).
+/// - **The skippable set** (`skippable_*`): `§3.1.2`'s 16 magics, a frame between skippables,
+///   the out-of-range 0x184D2A60 magic (the CLI exits 1 "unsupported format"), a truncated
+///   User_Data, and a 4 GiB Frame_Size — the amplification rule: the bytes are skipped by
+///   arithmetic, never staged.
+/// `§3.1.1.1.1.1` — FCS_Field_Size 1, Single_Segment_Flag set: descriptor 0x20, FCS 8, one Raw
+/// block of 8 (Window_Size 8 is Block_Maximum_Size, `§3.1.1.2.4`).
+pub const frame_fcs1 = hex("28b52ffd20084100003031323334353637");
+
+/// `§3.1.1.1.4` — FCS_Field_Size 2: descriptor 0x40, a 1 KB window, FCS 300 (field 44, +256),
+/// one RLE block of 300 `A`s.
+pub const frame_fcs2 = hex("28b52ffd40002c0063090041");
+
+/// `§3.1.1.1.1.2` — Single_Segment_Flag with the 2-byte FCS: descriptor 0x60, FCS 300, and
+/// Window_Size is that 300.
+pub const frame_fcs2_single_segment = hex("28b52ffd602c0063090041");
+
+/// `§3.1.1.1.4` — FCS_Field_Size 4: descriptor 0x80, a 1 KB window, FCS 8.
+pub const frame_fcs4 = hex("28b52ffd8000080000004100003031323334353637");
+
+/// `§3.1.1.1.4` — FCS_Field_Size 8: descriptor 0xC0, a 1 KB window, FCS 8.
+pub const frame_fcs8 = hex("28b52ffdc00008000000000000004100003031323334353637");
+
+/// `§3.1.1.1.1.3` — descriptor bit 4 set: "A decoder ... shall not interpret this bit"; the CLI
+/// decodes it to "abcd".
+pub const frame_unused_bit = hex("28b52ffd100021000061626364");
+
+/// `§3.1.1.1.1.4` — descriptor bit 3 set: "must ensure it is not set"; the CLI exits 1.
+pub const frame_reserved_bit = hex("28b52ffd080021000061626364");
+
+/// `§3.1.1.1.1.6` — Dictionary_ID_Flag 1: a 1-byte ID, refused at that byte; the CLI exits 1
+/// "Dictionary mismatch".
+pub const frame_dictionary_id = hex("28b52ffd01002a21000061626364");
+
+/// Dictionary_ID_Flag 3: a 4-byte ID, the same refusal at its first byte.
+pub const frame_dictionary_id_wide = hex("28b52ffd03004433221121000061626364");
+
+/// Dictionary_ID_Flag 1 with the input ending before the ID byte: the header is cut short, which
+/// is `Truncated` (the CLI exits 1 "premature end"), not `DictionaryRequired`.
+pub const frame_dictionary_id_truncated = hex("28b52ffd0100");
+
+/// `§3.1.1` — Content_Checksum_Flag: the trailer is the low 4 bytes of `XXH64("abcd", 0)`.
+pub const frame_checksum = hex("28b52ffd040021000061626364cc925dd2");
+
+/// The empty payload's checksum: the low 4 bytes of `XXH64("", 0)`.
+pub const frame_checksum_empty = hex("28b52ffd040001000099e9d851");
+
+/// `frame_checksum` with the Content_Checksum_Flag clear and no trailer: the
+/// notes' byte-identity pin (`docs/research/zstd-notes.md` §3 — the CLI's
+/// checksum-on and `--no-check` frames differ only in descriptor bit 2 and the
+/// four trailer bytes), reduced to the fixture pair. Both decode to "abcd".
+pub const frame_checksum_off = hex("28b52ffd000021000061626364");
+
+/// The same trailer with its last byte flipped: `WrongChecksum`; the CLI exits 1 "Restored data
+/// doesn't match checksum" (T8).
+pub const frame_checksum_corrupt = hex("28b52ffd040021000061626364cc925dd3");
+
+/// The trailer's last byte missing: the input ends inside the frame (`Truncated`).
+pub const frame_checksum_truncated = hex("28b52ffd040021000061626364cc925d");
+
+/// The CLI's own multi-block frame: `zstd -3` of `frame_checksum_multi_text` repeated 3000
+/// times. Descriptor 0xa4 — FCS_Field_Size 4, Single_Segment_Flag, Content_Checksum_Flag — FCS
+/// 135000, two Compressed_Blocks, trailer `23 6b a1 cc`.
+pub const frame_checksum_multi = hex("28b52ffda4580f0200c40100c40274686520717569636b2062726f77" ++
+    "6e20666f78206a756d7073206f76657220746865206c617a7920646f" ++
+    "672e0200ccff5065c01066194500000868010054f78110236ba1cc");
+
+/// The decoded content of `frame_checksum_multi`, repeated 3000 times (135000 bytes).
+pub const frame_checksum_multi_text: []const u8 = "the quick brown fox jumps over the lazy dog. ";
+
+/// `§3.1.1.1.4` — Frame_Content_Size 4 against an 8-byte block: the running bound trips at that
+/// block; the CLI exits 1.
+pub const frame_fcs_short = hex("28b52ffd8000040000004100003031323334353637");
+
+/// Frame_Content_Size 12 against an 8-byte block: the frame-end check trips; the CLI exits 1.
+pub const frame_fcs_long = hex("28b52ffd80000c0000004100003031323334353637");
+
+/// The 8-byte form's maximum, 2^64-1, against a 4-byte block: the declaration is checked
+/// against the decode like any other (`§3.1.1.1.4`), so ours fails `ContentSizeMismatch` and
+/// writes nothing past the block. The C accepts this one frame shape: it reserves
+/// 2^64-1 as `ZSTD_CONTENTSIZE_UNKNOWN` and skips the check — a sentinel the RFC does not
+/// have (Table 7's 8-byte range is "0 - 2^(64) - 1"), recorded here as the divergence the
+/// fixture pins. Verified: `zstd -d -c` exits 0 and decodes "abcd".
+pub const frame_fcs_max = hex("28b52ffdc000ffffffffffffffff21000061626364");
+
+/// `§3.1.1.2.4` — a single-segment frame whose FCS (hence Window_Size) is 4 carrying a 5-byte
+/// Raw block: `BlockOversize`; the CLI exits 1 "Src size is incorrect" (T7).
+pub const frame_single_segment_oversize = hex("28b52ffd20042900006162636465");
+
+/// `frame_raw`'s magic with its first byte flipped: neither magic family, `BadMagic` (the
+/// CLI exits 1 "unsupported format"). The research's corruption set's flipped-magic row
+/// (`docs/research/zstd-notes.md` §5.4).
+pub const frame_bad_magic = hex("29b52ffd00484100007a73746420726177");
+
+/// `frame_raw` plus `zzzz`: the frame decodes and the tail is ignored (T10 — the one-shot's
+/// boundary rule; the CLI exits 1 "unsupported format" on the tail).
+pub const frame_trailing_garbage = hex("28b52ffd00484100007a737464207261777a7a7a7a");
+
+/// Two complete frames back to back: the one-shot decodes the first and ignores the second (a
+/// multi-frame file is `Reader.streamAll`'s walk); the CLI decodes both (14 bytes).
+pub const frame_two_frames = hex("28b52ffd00484100007a7374642072617728b52ffd00483100007365" ++
+    "636f6e64");
+
+/// `§3.1.2` — a skippable frame (magic 0x184D2A53) before a good frame: skipped, then decoded.
+pub const skippable_prefix = hex("532a4d18040000006d65746128b52ffd00484100007a737464207261" ++
+    "77");
+
+/// `§3.1.2` — sixteen skippable frames, all 16 magics: "All 16 values are valid"; the CLI
+/// decodes to zero bytes cleanly (T10's only-skippable clean end).
+pub const skippable_sixteen = hex("502a4d1803000000404040512a4d1803000000414141522a4d180300" ++
+    "0000424242532a4d1803000000434343542a4d180300000044444455" ++
+    "2a4d1803000000454545562a4d1803000000464646572a4d18030000" ++
+    "00474747582a4d1803000000484848592a4d18030000004949495a2a" ++
+    "4d18030000004a4a4a5b2a4d18030000004b4b4b5c2a4d1803000000" ++
+    "4c4c4c5d2a4d18030000004d4d4d5e2a4d18030000004e4e4e5f2a4d" ++
+    "18030000004f4f4f");
+
+/// `§3.1.2` — a good frame between two skippable frames: both are skipped, the frame decodes.
+pub const skippable_around = hex("502a4d1802000000616128b52ffd00484100007a737464207261775f" ++
+    "2a4d18020000006262");
+
+/// 0x184D2A60: one past the skippable range and not the Zstandard magic — `BadMagic`; the CLI
+/// exits 1 "unsupported format".
+pub const skippable_bad_magic = hex("602a4d1803000000616263");
+
+/// A skippable frame declaring 10 User_Data bytes with 3 present: `Truncated`.
+pub const skippable_truncated = hex("502a4d180a000000616263");
+
+/// A skippable frame declaring 4 GiB of User_Data (`§3.1.2`'s field maximum) with 3 present:
+/// `Truncated`, and no memory touched — the bytes are skipped by arithmetic, never staged.
+pub const skippable_huge = hex("512a4d18ffffffff616263");

@@ -585,6 +585,56 @@ v1.18.0-5-g8df4d01; `std` cites the 0.16.0 store.
   leaves acquisition out of band (`§5`) and `§2` requires the unambiguous
   error. Decision: M4 fails closed on dictionaries (OQ4) — the std/zlib-FDICT
   posture; klauspost's support is a recorded divergence.
+- **T12 — the window bound: the C accepts offsets one byte past the declared
+  Window_Size.** `§3.1.1.4` states the rule: "all offsets leading to
+  previously decoded data must be smaller than Window_Size". The C's
+  whole-buffer decoder checks the *available history*, not the declared
+  window, so a frame whose match reaches one byte past its Window_Size decodes
+  there when the bytes are still in its buffer (verified: the hand-built
+  `frame_window_1k_over` and `frame_window_128k_over` — a 1 KB and a 128 KB
+  window, each with its match one byte past the declaration — both decode
+  byte-exact through the pinned CLI v1.5.7, exit 0, 2051 and 262147 bytes).
+  The encoder family cannot emit such a frame (its match search is bounded by
+  the window), so the divergence is decoder leniency only. Decision: enforce
+  the declared bound — an offset past Window_Size is `OffsetTooFar` — while
+  accepting an offset of *exactly* Window_Size, which reads the window's
+  oldest retained byte and is what the reference family's windowSize-byte
+  history resolves (the fixtures' own match, `frame_window_1k` /
+  `frame_window_128k`, is at exactly Window_Size and the CLI decodes both, so
+  the RFC's "smaller than" is read as the window's addressable span rather
+  than as an exclusive bound). The `*_over` pair is the bad-frame corpus for
+  the rule, and `block.zig`'s module doc carries the divergence at the point
+  of enforcement; `frame_window_1k_over`/`frame_window_128k_over` are the
+  fixtures.
+- **T13 — the empty zero-size Compressed_Block.** `§3.1.1.3`: "A compressed
+  block consists of two sections: a Literals_Section and a
+  Sequences_Section" — and `§3.1.1.2.3` lets Block_Size be 0 for any type.
+  The C reads a zero-byte Compressed_Block as a no-op (verified: the
+  hand-built `frame_empty_compressed` — descriptor 0x00, a 3-byte
+  Block_Header with Block_Type 2 and Block_Size 0 and nothing after it —
+  decodes through the pinned CLI v1.5.7 with exit 0 and zero bytes). Ours
+  decodes the literals section first, and its 1-5 byte header is not there:
+  `MalformedLiteralsHeader`, raised before any write. Decision: fail closed —
+  the block is not a literals section plus a sequences section, so no byte of
+  it is well-formed, and a no-op block has no output and no state to carry,
+  which is why nothing conformant depends on the lenient reading. The fixture
+  is in the bad-frame corpus (`golden.zig`), the CLI's verdict recorded
+  beside it.
+- **T14 — Frame_Content_Size 2^64-1 is the C's "unknown" sentinel.** The
+  C reserves `ZSTD_CONTENTSIZE_UNKNOWN` = 2^64-1 (and `ZSTD_CONTENTSIZE_ERROR`
+  = 2^64-2) in its frame-header parse and skips the size check for the 8-byte
+  form's maximum (verified: a hand-built frame declaring 2^64-1 with a 4-byte
+  Raw block decodes through the pinned CLI v1.5.7, exit 0, "abcd" — while
+  2^64-2 and every smaller declaration the frame does not match fail with
+  "Data corruption detected"). The RFC has no such value: Table 7's 8-byte
+  range is "0 - 2^(64) - 1", and `§3.1.1.1.4` makes the field "the original
+  (uncompressed) size" — a declaration like any other. Decision: treat it as
+  a declaration, checked against the decode like every other value, so the
+  fixture fails `ContentSizeMismatch` here and the C accepts it; nothing is
+  sized from the declaration either way (the one-shot's cap is `target`, the
+  reader's is its buffer), so the divergence is the check alone. Found by this
+  slice's fixtures (`frame_fcs_max` in `golden.zig` records it beside the
+  bytes); it is the only value where the two readings differ.
 
 ## 5. Fixture inventory (every entry verified live where a decoder can run it)
 

@@ -27,7 +27,9 @@ pub const zlib = @import("zlib/root.zig");
 /// sequences (FSE) layers, the XXH64 frame checksum, and the `std.Io`
 /// streaming layer. API and design: `src/zstd/README.md`; format:
 /// docs/research/specs/rfc8878-zstd.txt. M4 is decoder-first and lands in
-/// slices; the entropy kernels are here, the surface follows.
+/// slices: `zstd.decode` (the one-shot) is here; `zstd.Reader` (the
+/// streaming reader) is the next slice, and `zstd.encode`/`zstd.Writer`
+/// are M5.
 pub const zstd = @import("zstd/root.zig");
 
 test {
@@ -54,5 +56,7 @@ test {
     _ = zlib.decode.decompress;
     _ = zlib.Reader.streamAll;
     _ = zlib.Writer.streamAll;
+    _ = zstd.decode.max_block_size;
+    _ = zstd.decode.decompress;
     std.testing.refAllDecls(@This());
 }

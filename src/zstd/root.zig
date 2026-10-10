@@ -10,8 +10,11 @@
 //! the literals section (`literals.zig`) and the sequences section
 //! (`sequences.zig`, Sequence Execution included) — then the block layer
 //! (`block.zig`: the Block_Header, the Raw/RLE/Compressed dispatch, and the
-//! frame's cross-block state) — and the public surface — `zstd.decode` and
-//! `zstd.Reader` — arrives with the frame layer on top.
+//! frame's cross-block state), then the frame layer (`frame.zig`: the
+//! magic, the Frame_Header, the block chain, the XXH64 trailer, skippable
+//! frames) with the one-shot decoder (`decode.zig`) on top of it. The
+//! public surface is `zstd.decode` and `zstd.Reader`; the streaming reader
+//! is the next slice.
 //! Contracts: README.md (the M4 sketch); format:
 //! docs/research/specs/rfc8878-zstd.txt.
 
@@ -21,18 +24,28 @@ const bits = @import("bits.zig");
 const block = @import("block.zig");
 const common = @import("common.zig");
 const fse = @import("fse.zig");
+const frame = @import("frame.zig");
 const huff0 = @import("huff0.zig");
 const literals = @import("literals.zig");
 const sequences = @import("sequences.zig");
+const xxh64 = @import("xxh64.zig");
+
+/// The one-shot decoder: `decompress`, its error set, and the layer types
+/// it is built from (`frame`, `block`, `literals`, `sequences`, `fse`, and
+/// the `window` arithmetic). API and design: README.md, "API".
+pub const decode = @import("decode.zig");
 
 test {
     _ = bits;
     _ = block;
     _ = common;
     _ = fse;
+    _ = frame;
     _ = huff0;
     _ = literals;
     _ = sequences;
+    _ = xxh64;
+    _ = decode;
     _ = @import("golden.zig");
     std.testing.refAllDecls(@This());
 }
