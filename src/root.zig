@@ -23,12 +23,19 @@ pub const snappy = @import("snappy/root.zig");
 /// Adler-32 trailer, and the `std.Io` streaming layer. API and design:
 /// `src/zlib/README.md`; format: docs/research/specs/rfc1950-zlib.txt.
 pub const zlib = @import("zlib/root.zig");
+/// zstd (RFC 8878) decoder: the frame, block, literals (huff0), and
+/// sequences (FSE) layers, the XXH64 frame checksum, and the `std.Io`
+/// streaming layer. API and design: `src/zstd/README.md`; format:
+/// docs/research/specs/rfc8878-zstd.txt. M4 is decoder-first and lands in
+/// slices; the entropy kernels are here, the surface follows.
+pub const zstd = @import("zstd/root.zig");
 
 test {
     _ = flate;
     _ = snappy;
     _ = gzip;
     _ = zlib;
+    _ = zstd;
     // The consumer surface, named the way a consumer names it: four names
     // per codec namespace, nothing flat at the root (AGENTS.md, "Rules").
     _ = flate.encode.Level;
