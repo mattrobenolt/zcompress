@@ -1086,6 +1086,10 @@ const ReadOp = enum(u8) {
     /// A request past the contiguous-read cap: served when the window has
     /// room, `StreamTooLong` when it does not — never an assert.
     over_cap_take,
+    /// A peek past the cap with no `left` guard: the member's end through the
+    /// rebase path, where the trailer check must still run (the M3 closing
+    /// review's blocker: a clean end always means the trailer was verified).
+    over_end_peek,
 };
 
 /// Target 5: the reader's consumer machinery, Smith-driven.
@@ -1260,6 +1264,39 @@ fn fuzzReaderMachinery(_: void, smith: *Smith) anyerror!void {
                     try expectContiguityStop(&r, err);
                     dead = true;
                     break;
+                }
+            },
+            .over_end_peek => {
+                // A peek past the contiguity cap with no `left` guard:
+                // mid-member it is the contiguity stop, but at the stream's
+                // end it routes through `rebase`, where flate's sticky end
+                // fires before the trailer is read — the trailer check must
+                // run there too (the M3 closing review's blocker: a clean
+                // `EndOfStream` must always mean the trailer was verified,
+                // `§2.3`, T4). The unserved decoded bytes stay in the
+                // window; the epilogue drains them.
+                const n = windowTailLen() + 1 + rangeAtMost(smith, 0, windowTailLen() - 1);
+                if (r.reader.peek(n)) |served| {
+                    try testing.expect(n <= left);
+                    try testing.expectEqualSlices(u8, input[pos..][0..n], served);
+                } else |err| switch (err) {
+                    error.EndOfStream => {
+                        // The member ended through the trailer funnel: the
+                        // clean end is real — no detail, the state done, the
+                        // input stopped exactly at the trailer's last byte
+                        // (the plain reader), every unserved decoded byte
+                        // still in the window.
+                        try testing.expectEqual(@as(?zlib.Reader.Error, null), r.err);
+                        try testing.expectEqual(internal.reader.State.done, r.state);
+                        if (!chunked) try testing.expectEqual(stream.written().len, fixed_in.seek);
+                        try testing.expectEqual(input.len - pos, r.reader.end - r.reader.seek);
+                        break;
+                    },
+                    else => |e| {
+                        try expectContiguityStop(&r, e);
+                        dead = true;
+                        break;
+                    },
                 }
             },
         }

@@ -127,7 +127,10 @@ fn fillStream(r: *Reader) Error!usize {
         // flate's clean end: the body is complete, and its bit reader
         // consumed the input exactly through the last byte — the trailer is
         // next (the exact-consumption contract, OQ2).
-        error.EndOfStream => return r.readTrailer(),
+        error.EndOfStream => {
+            try r.readTrailer();
+            return error.EndOfStream;
+        },
         // The detail is recorded by `record`'s funnel, once.
         error.ReadFailed => return r.inner.err.?,
     };
@@ -156,7 +159,7 @@ fn readHeader(r: *Reader) Error!void {
 /// Adler-32 of the decoded bytes, u32 most-significant-byte first (`§2.1`).
 /// Verified exactly once, then the reader is `done` (sticky); a mismatch is
 /// the specific error, a short trailer `Truncated`.
-fn readTrailer(r: *Reader) Error!usize {
+fn readTrailer(r: *Reader) Error!void {
     var trailer: [decode.trailer_len]u8 = undefined;
     try decode.readExact(r.input, &trailer);
     try decode.checkTrailer(&trailer, r.checksum.final());
@@ -173,7 +176,17 @@ fn rebase(r: *Reader, capacity: usize) Io.Reader.RebaseError!void {
     r.inner.reader.seek = r.reader.seek;
     r.inner.reader.end = r.reader.end;
     r.inner.reader.rebase(capacity) catch |err| switch (err) {
-        error.EndOfStream => return error.EndOfStream,
+        // flate's sticky end is the body's clean end: the trailer is next,
+        // the same funnel `fillStream` runs — read it, check it, and only
+        // then report the clean end. The input stands exactly at the
+        // trailer's first byte (the exact-consumption contract), so the
+        // check consumes exactly through the stream's last byte.
+        error.EndOfStream => {
+            r.readTrailer() catch |trailer_err| return switch (trailer_err) {
+                error.EndOfStream => error.EndOfStream,
+                else => r.fail(trailer_err),
+            };
+        },
         error.ReadFailed => return r.fail(r.inner.err.?),
     };
     r.reader.seek = r.inner.reader.seek;
@@ -470,6 +483,51 @@ test "Reader: a corrupt trailer fails at the clean end, stickily" {
         // The decoded bytes are still served (the check is at the end), but
         // no clean end is reported.
         try testing.expectEqualStrings(source, out.written());
+    }
+}
+
+test "Reader: an over-the-end request still checks the trailer" {
+    // The rebase path: a request the window cannot hold at the consumer's
+    // position routes through `rebase`, where flate's sticky end fires
+    // before the trailer is read. The trailer check must run there too —
+    // "verifies the trailer exactly once, and only then reports
+    // `error.EndOfStream`" (README, "Streaming") holds on every path, and
+    // RFC 1950 §2.3 requires the ADLER32 check unconditionally. Found by
+    // the M3 closing review: the input stops 4 bytes short otherwise, and
+    // a corrupted stream ends with a clean `EndOfStream`.
+
+    // A stream whose decoded size lands the window deep enough that a
+    // 30-KiB request overflows the room at the consumer's position.
+    const source = "the quick brown fox jumps over the lazy dog. " ** 950;
+    var stream: [encode.maxCompressedLength(43 * 950)]u8 = undefined;
+    const len = try encode.compress(source, &stream, .{});
+
+    // The good trailer: the over-the-end request reports the clean end
+    // with the input exactly at the stream's last byte (the boundary
+    // contract) and the state done.
+    {
+        var rbuf: Buffer = undefined;
+        var fixed_in: Io.Reader = .fixed(stream[0..len]);
+        var r: Reader = .init(&fixed_in, &rbuf);
+        _ = try r.reader.take(39 * 1024);
+        try testing.expectError(error.EndOfStream, r.reader.peek(30 * 1024));
+        try testing.expectEqual(@as(usize, len), fixed_in.seek);
+        try testing.expectEqual(State.done, r.state);
+        try testing.expectEqual(@as(?Error, null), r.err);
+    }
+
+    // The corrupted trailer: the same request fails `ReadFailed` with the
+    // specific error, on every trailer byte.
+    for (0..decode.trailer_len) |at| {
+        var bad = stream;
+        bad[len - decode.trailer_len + at] ^= 0x01;
+        var rbuf: Buffer = undefined;
+        var fixed_in: Io.Reader = .fixed(bad[0..len]);
+        var r: Reader = .init(&fixed_in, &rbuf);
+        _ = try r.reader.take(39 * 1024);
+        try testing.expectError(error.ReadFailed, r.reader.peek(30 * 1024));
+        try testing.expectEqual(Error.WrongChecksum, r.err.?);
+        try testing.expectEqual(State.failed, r.state);
     }
 }
 
