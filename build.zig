@@ -1,5 +1,6 @@
 const std = @import("std");
 const Build = std.Build;
+const comptimePrint = std.fmt.comptimePrint;
 
 pub fn build(b: *Build) void {
     const target = b.standardTargetOptions(.{});
@@ -50,97 +51,37 @@ pub fn build(b: *Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const snappy_example_mod = b.createModule(.{
-        .root_source_file = b.path("examples/snappy.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cli", .module = cli_mod },
-            .{ .name = "zcompress", .module = zcompress_mod },
-        },
-    });
-    const snappy_example = b.addExecutable(.{
-        .name = "snappy",
-        .root_module = snappy_example_mod,
-    });
-    const run_snappy_example = b.addRunArtifact(snappy_example);
-    // The CLI writes to stdout: always run, never a cached result.
-    run_snappy_example.has_side_effects = true;
-    if (b.args) |args| run_snappy_example.addArgs(args);
-    const snappy_example_step = b.step(
-        "example-snappy",
-        "Run the snappy example CLI (encode|decode [FILE|-])",
-    );
-    snappy_example_step.dependOn(&run_snappy_example.step);
 
-    const flate_example_mod = b.createModule(.{
-        .root_source_file = b.path("examples/flate.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cli", .module = cli_mod },
-            .{ .name = "zcompress", .module = zcompress_mod },
-        },
-    });
-    const flate_example = b.addExecutable(.{
-        .name = "flate",
-        .root_module = flate_example_mod,
-    });
-    const run_flate_example = b.addRunArtifact(flate_example);
-    // The CLI writes to stdout: always run, never a cached result.
-    run_flate_example.has_side_effects = true;
-    if (b.args) |args| run_flate_example.addArgs(args);
-    const flate_example_step = b.step(
-        "example-flate",
-        "Run the flate example CLI (encode|decode [FILE|-])",
-    );
-    flate_example_step.dependOn(&run_flate_example.step);
-
-    const gzip_example_mod = b.createModule(.{
-        .root_source_file = b.path("examples/gzip.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cli", .module = cli_mod },
-            .{ .name = "zcompress", .module = zcompress_mod },
-        },
-    });
-    const gzip_example = b.addExecutable(.{
-        .name = "gzip",
-        .root_module = gzip_example_mod,
-    });
-    const run_gzip_example = b.addRunArtifact(gzip_example);
-    // The CLI writes to stdout: always run, never a cached result.
-    run_gzip_example.has_side_effects = true;
-    if (b.args) |args| run_gzip_example.addArgs(args);
-    const gzip_example_step = b.step(
-        "example-gzip",
-        "Run the gzip example CLI (encode|decode [FILE|-])",
-    );
-    gzip_example_step.dependOn(&run_gzip_example.step);
-
-    const zlib_example_mod = b.createModule(.{
-        .root_source_file = b.path("examples/zlib.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cli", .module = cli_mod },
-            .{ .name = "zcompress", .module = zcompress_mod },
-        },
-    });
-    const zlib_example = b.addExecutable(.{
-        .name = "zlib",
-        .root_module = zlib_example_mod,
-    });
-    const run_zlib_example = b.addRunArtifact(zlib_example);
-    // The CLI writes to stdout: always run, never a cached result.
-    run_zlib_example.has_side_effects = true;
-    if (b.args) |args| run_zlib_example.addArgs(args);
-    const zlib_example_step = b.step(
-        "example-zlib",
-        "Run the zlib example CLI (encode|decode [FILE|-])",
-    );
-    zlib_example_step.dependOn(&run_zlib_example.step);
+    inline for (.{ "snappy", "flate", "gzip", "zlib" }) |name| {
+        const mod = b.createModule(.{
+            .root_source_file = b.path(comptimePrint("examples/{s}.zig", .{name})),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "cli", .module = cli_mod },
+                .{ .name = "zcompress", .module = zcompress_mod },
+            },
+        });
+        const example = b.addExecutable(.{
+            .name = name,
+            .root_module = mod,
+        });
+        const run = b.addRunArtifact(example);
+        run.has_side_effects = true;
+        if (b.args) |args| run.addArgs(args);
+        const example_step = b.step(
+            comptimePrint("example-{s}", .{name}),
+            comptimePrint("Run the {s} example CLI (encode|decode [FILE|-])", .{name}),
+        );
+        example_step.dependOn(&run.step);
+        const example_tests = b.addTest(.{
+            .root_module = mod,
+            .test_runner = test_runner,
+        });
+        const run_example_tests = b.addRunArtifact(example_tests);
+        run_example_tests.has_side_effects = true;
+        test_step.dependOn(&run_example_tests.step);
+    }
 
     // External-oracle harness (src/flate/oracle.zig): decodes one stream from
     // a file into a caller-sized buffer, for the `just flate-oracle` lane.
@@ -209,36 +150,6 @@ pub fn build(b: *Build) void {
         "Install the zlib oracle-lane harness (zig-out/bin/zlib-oracle)",
     );
     zlib_oracle_step.dependOn(&install_zlib_oracle.step);
-
-    // The examples' own tests run with the unit tests.
-    const snappy_example_tests = b.addTest(.{
-        .root_module = snappy_example_mod,
-        .test_runner = test_runner,
-    });
-    const run_snappy_example_tests = b.addRunArtifact(snappy_example_tests);
-    run_snappy_example_tests.has_side_effects = true;
-    test_step.dependOn(&run_snappy_example_tests.step);
-    const flate_example_tests = b.addTest(.{
-        .root_module = flate_example_mod,
-        .test_runner = test_runner,
-    });
-    const run_flate_example_tests = b.addRunArtifact(flate_example_tests);
-    run_flate_example_tests.has_side_effects = true;
-    test_step.dependOn(&run_flate_example_tests.step);
-    const gzip_example_tests = b.addTest(.{
-        .root_module = gzip_example_mod,
-        .test_runner = test_runner,
-    });
-    const run_gzip_example_tests = b.addRunArtifact(gzip_example_tests);
-    run_gzip_example_tests.has_side_effects = true;
-    test_step.dependOn(&run_gzip_example_tests.step);
-    const zlib_example_tests = b.addTest(.{
-        .root_module = zlib_example_mod,
-        .test_runner = test_runner,
-    });
-    const run_zlib_example_tests = b.addRunArtifact(zlib_example_tests);
-    run_zlib_example_tests.has_side_effects = true;
-    test_step.dependOn(&run_zlib_example_tests.step);
 
     // Unit tests: one test executable over the one module. The codec
     // suites, their shared-layer consumers, and the barrel's own tests all
@@ -311,6 +222,27 @@ pub fn build(b: *Build) void {
         "Regenerate the committed fleet corpus (bench/corpus/)",
     );
     corpus_step.dependOn(&run_corpus.step);
+
+    // Bench competitor sources (bench/README.md, "Arms"): the C arms build
+    // libdeflate, zlib-ng, and google/snappy from the release tarballs pinned
+    // by url+hash in bench/build.zig.zon. The bench tool's own build root
+    // fetches them (zig's fetcher verifies each hash) and installs the trees
+    // under bench/zig-out/bench-src/<name>/ for the harness's zig-cc/cmake
+    // builds (the ztls conformance precedent: dep.path(...) straight out of
+    // the fetched tree — no module import, no build.zig inside the dep). This
+    // step only delegates to it, and the dependency deliberately stays out of
+    // THIS build graph: a `b.lazyDependency` call here would mark it needed at
+    // configure time, and the build runner fetches every marked dependency on
+    // any invocation, `zig build test` included — the fetch trigger is the
+    // call site, not the requested step.
+    const bench_vendor_step = b.step(
+        "bench-vendor",
+        "Materialize the pinned bench competitor sources (bench/zig-out/bench-src/)",
+    );
+    const zig_exe: []const u8 = b.graph.zig_exe;
+    const bench_vendor = b.addSystemCommand(&.{ zig_exe, "build", "bench-vendor" });
+    bench_vendor.setCwd(b.path("bench"));
+    bench_vendor_step.dependOn(&bench_vendor.step);
 
     // Benchmarks. The benchmark dependency is lazy: b.lazyImport fetches it
     // on the first `zig build bench` and returns null meanwhile, so the

@@ -136,7 +136,7 @@ def test_fleet(config: Config, targets: tuple[str, ...], launch: bool, ttl: str 
     from zcompress_bench.build import resolve
 
     source = resolve(config, "WORKTREE")
-    builds = build_all(config, source, names)
+    builds, _ = build_all(config, source, names)
     outputs = fleet.outputs() if names else {}
 
     results = parallel(

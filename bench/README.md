@@ -20,10 +20,21 @@ via systemd; `ec2bench/isolation.py`):
 |---|---|---|---|
 | `zc` | `zig build fleet-bench` (bench/zig/bench_zcompress.zig) | zcompress one-shots (flate/gzip/zlib level `.fast`, snappy block), both directions, **plus the `std` rows**: std.compress.flate raw/gzip/zlib at `level_1` | cross per target: `-Dtarget=<arch>-linux-musl -Dcpu=<model>`, ReleaseFast, static |
 | `klauspost` | bench/drivers/klauspost (Go) | klauspost/compress flate/gzip/zlib level 1 + snappy, both directions | `go build`, GOOS=linux per arch; module pins v1.18.1-0.20250402062133-8df4d013ff17 (the research's local checkout commit) |
-| `libdeflate` | bench/drivers/c/bench_libdeflate.c | libdeflate v1.26 gzip/zlib/deflate one-shots, level 1 | `zig cc -static` per target/CPU from the pinned tarball (sha256 in build.py) |
+| `libdeflate` | bench/drivers/c/bench_libdeflate.c | libdeflate v1.26 gzip/zlib/deflate one-shots, level 1 | `zig cc -static` per target/CPU over the zon-pinned source tree |
 | `zlibng` | bench/drivers/c/bench_zlibng.c | zlib-ng 2.3.3 streaming (zlib-compat API, windowBits -15/15/31), level 1 | cmake (ZLIB_COMPAT, static) with a zig-cc wrapper, per target/CPU |
-| `googlesnappy` | bench/drivers/google-snappy/bench_snappy.cc | google/snappy 1.3.1 raw blocks (`snappy::RawCompress`/`RawUncompress`), both directions | cmake (static `snappy`) with zig-cc/zig-c++ wrappers, per target/CPU from the pinned tarball (sha256 in build.py) |
+| `googlesnappy` | bench/drivers/google-snappy/bench_snappy.cc | google/snappy 1.3.1 raw blocks (`snappy::RawCompress`/`RawUncompress`), both directions | cmake (static `snappy`) with zig-cc/zig-c++ wrappers, per target/CPU over the zon-pinned source tree |
 | `aa` | the `zc` binary again | the A/A noise floor | — |
+
+The three C arms' sources are pinned in `bench/build.zig.zon` (release-tarball
+url+hash, lazy) — the bench tool's own build root, the ztls `conformance/`
+shape: the harness's competitors are the harness's concern, and the root
+package's zon stays clean. `zig build bench-vendor` (the repo root's step
+delegates to `bench/build.zig`) materializes them under
+`bench/zig-out/bench-src/<name>/`, hash-verified by zig's own fetcher, so the
+harness never downloads or unpacks a tarball itself. Keeping the
+`lazyDependency` call in the bench build root is what keeps a competitor out
+of `zig build test`: the call marks the dependency needed at configure time,
+and the build runner fetches every marked dependency on any invocation.
 
 Snappy competitor coverage: klauspost plus google/snappy C++ (the plan's
 pinned canonical implementation, `docs/zcompress-plan.md`, "Benchmark

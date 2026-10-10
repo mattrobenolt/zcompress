@@ -4,9 +4,12 @@ Every arm cross-builds on this host; the boxes only execute. The zc arm is
 `zig build fleet-bench` from the measured source tree. The klauspost arm is
 `go build` of bench/drivers/klauspost (the module pins klauspost/compress to
 the research's local checkout commit). The libdeflate, zlib-ng, and
-google/snappy arms fetch their pinned release tarballs (sha256 below) and
-compile with `zig cc`/`zig c++` (zlib-ng and google/snappy configure through
-cmake with zig toolchain wrappers; the flake provides cmake and go).
+google/snappy arms compile the release tarballs pinned by url+hash in
+bench/build.zig.zon — the bench tool's own build root, which `zig build
+bench-vendor` delegates to; it fetches and materializes them under
+bench/zig-out/bench-src/ — with `zig cc`/`zig c++` (zlib-ng and google/snappy
+configure through cmake with zig toolchain wrappers; the flake provides cmake
+and go).
 """
 
 import errno
@@ -15,33 +18,29 @@ import json
 import os
 import shutil
 import subprocess
-import tarfile
 import tempfile
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ec2bench.config import Config
-from ec2bench.parallel import Outcome, parallel
+from ec2bench.parallel import Outcome, parallel, progress
 from ec2bench.runs import git
 
 ARMS = ("zc", "klauspost", "libdeflate", "zlibng", "googlesnappy")
-# The competitor pins (docs/research/containers-notes.md names the sources;
-# google/snappy is docs/zcompress-plan.md's pinned snappy competitor).
+# The competitor version labels (docs/research/containers-notes.md names the
+# sources; google/snappy is docs/zcompress-plan.md's pinned snappy
+# competitor). The content pins — the release-tarball url+hash — live in
+# bench/build.zig.zon; `zig build bench-vendor` materializes the fetched trees.
 LIBDEFLATE_VERSION = "v1.26"
-LIBDEFLATE_URL = (
-    f"https://github.com/ebiggers/libdeflate/archive/refs/tags/{LIBDEFLATE_VERSION}.tar.gz"
-)
-LIBDEFLATE_SHA256 = "bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f13cf85"
 ZLIBNG_VERSION = "2.3.3"
-ZLIBNG_URL = f"https://github.com/zlib-ng/zlib-ng/archive/refs/tags/{ZLIBNG_VERSION}.tar.gz"
-ZLIBNG_SHA256 = "f9c65aa9c852eb8255b636fd9f07ce1c406f061ec19a2e7d508b318ca0c907d1"
 SNAPPY_VERSION = "1.3.1"
-SNAPPY_URL = f"https://github.com/google/snappy/archive/refs/tags/{SNAPPY_VERSION}.tar.gz"
-SNAPPY_SHA256 = "893f708a0bf4b5529d555ffcee390e940e932fcf90261f682604475a76cd0247"
 # The local research checkout (~/code/klauspost-compress), pinned in go.mod.
 KLAUSPOST_VERSION = "v1.18.1-0.20250402062133-8df4d013ff17"
+# The C-arm sources, as `zig build bench-vendor` installs them (the bench
+# tool's own build root: bench/build.zig, bench/build.zig.zon).
+VENDOR_ARMS = ("libdeflate", "zlibng", "googlesnappy")
+VENDOR_DIR = Path("bench") / "zig-out" / "bench-src"
 
 GO_ARCHES = {"x86_64": "amd64", "arm64": "arm64"}
 
@@ -64,6 +63,15 @@ class Build:
     @property
     def sha256(self) -> str:
         return hashlib.sha256(self.binary.read_bytes()).hexdigest()
+
+
+@dataclass(frozen=True)
+class Vendor:
+    """One materialized competitor source tree and its content hash."""
+
+    name: str
+    path: Path
+    tree_hash: str
 
 
 def source_hash(root: Path) -> str:
@@ -115,27 +123,41 @@ def tool_version(args: list[str]) -> str:
     ).stdout.strip()
 
 
-def vendor(config: Config, name: str, url: str, sha256: str) -> Path:
-    """Fetch and extract a pinned release tarball into the cache, once."""
-    directory = config.cache_dir / "vendor"
-    tarball = directory / f"{name}.tar.gz"
-    extracted = directory / f"{name}-src"
-    if extracted.exists():
-        return extracted
-    directory.mkdir(parents=True, exist_ok=True)
-    if not tarball.exists() or hashlib.sha256(tarball.read_bytes()).hexdigest() != sha256:
-        with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310 — pinned URL+sha
-            tarball.write_bytes(response.read())
-    if hashlib.sha256(tarball.read_bytes()).hexdigest() != sha256:
-        raise ValueError(f"{tarball}: sha256 mismatch against the pinned {sha256}")
-    with tarfile.open(tarball) as archive:
-        archive.extractall(directory, filter="data")
-    children = [child for child in directory.iterdir() if child.name.startswith(name)]
-    roots = [child for child in children if child.is_dir() and child.name != f"{name}-src"]
-    if len(roots) != 1:
-        raise ValueError(f"{tarball}: expected one top-level directory")
-    roots[0].rename(extracted)
-    return extracted
+def tree_hash(root: Path) -> str:
+    """Content hash of a materialized vendor tree (names, modes, bytes)."""
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        digest.update(path.relative_to(root).as_posix().encode() + b"\0")
+        if path.is_symlink():
+            digest.update(b"link:" + os.fsencode(path.readlink()))
+        elif path.is_file():
+            digest.update(str(path.stat().st_mode).encode() + b"\0" + path.read_bytes())
+        else:
+            digest.update(b"dir")
+    return digest.hexdigest()
+
+
+def vendor(config: Config) -> dict[str, Vendor]:
+    """Materialize the pinned competitor sources through zig's own fetcher.
+
+    The pins are bench/build.zig.zon's lazy url+hash entries; `zig build
+    bench-vendor` delegates to the bench tool's build root, which fetches each
+    tarball through zig's own fetcher and installs the verified tree under
+    bench/zig-out/bench-src/<name>/ (the ztls conformance precedent: the
+    tool-local zon pins the tool's competitors). The harness never downloads
+    or unpacks a tarball itself, and the root package's zon stays clean.
+    """
+    log = config.cache_dir / "build" / "bench-vendor.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    progress("vendor competitor sources")
+    checked(["zig", "build", "bench-vendor"], config.root, log)
+    vendors: dict[str, Vendor] = {}
+    for name in VENDOR_ARMS:
+        path = config.root / VENDOR_DIR / name
+        if not path.is_dir():
+            raise ValueError(f"bench-vendor did not materialize {path}")
+        vendors[name] = Vendor(name, path, tree_hash(path))
+    return vendors
 
 
 def finalize(config: Config, key_data: list[Any], install: Any) -> Path:
@@ -248,9 +270,8 @@ def cc_flags(settings: dict[str, Any]) -> list[str]:
     return [*target_flags(settings), "-O2", "-static"]
 
 
-def build_libdeflate(config: Config, target: str, zig_version: str) -> Build:
+def build_libdeflate(config: Config, source: Vendor, target: str, zig_version: str) -> Build:
     settings = config.targets[target]
-    source = vendor(config, "libdeflate-1.26", LIBDEFLATE_URL, LIBDEFLATE_SHA256)
     driver = config.root / "bench" / "drivers" / "c"
     driver_hash = hash_paths([driver / "cbench.h", driver / "bench_libdeflate.c"])
     key_data = [
@@ -260,14 +281,14 @@ def build_libdeflate(config: Config, target: str, zig_version: str) -> Build:
         settings["zig_cpu"],
         zig_version,
         LIBDEFLATE_VERSION,
-        LIBDEFLATE_SHA256,
-        "v1",
+        source.tree_hash,
+        "v2",
     ]
 
     def install(temporary: Path) -> None:
         (temporary / "bin").mkdir()
         arch_dir = "x86" if settings["arch"] == "x86_64" else "arm"
-        arch_sources = sorted((source / "lib" / arch_dir).glob("*.c"))
+        arch_sources = sorted((source.path / "lib" / arch_dir).glob("*.c"))
         checked(
             [
                 "zig",
@@ -277,8 +298,8 @@ def build_libdeflate(config: Config, target: str, zig_version: str) -> Build:
                 f'-DCBENCH_CPU="{settings["zig_cpu"]}"',
                 f'-DZIG_VERSION="{zig_version}"',
                 f'-DCOMPETITOR_VERSION="{LIBDEFLATE_VERSION}"',
-                f"-I{source}",
-                *[str(path) for path in sorted((source / "lib").glob("*.c"))],
+                f"-I{source.path}",
+                *[str(path) for path in sorted((source.path / "lib").glob("*.c"))],
                 *[str(path) for path in arch_sources],
                 str(driver / "bench_libdeflate.c"),
                 "-o",
@@ -294,9 +315,8 @@ def build_libdeflate(config: Config, target: str, zig_version: str) -> Build:
     )
 
 
-def build_zlibng(config: Config, target: str, zig_version: str) -> Build:
+def build_zlibng(config: Config, source: Vendor, target: str, zig_version: str) -> Build:
     settings = config.targets[target]
-    source = vendor(config, "zlib-ng-2.3.3", ZLIBNG_URL, ZLIBNG_SHA256)
     driver = config.root / "bench" / "drivers" / "c"
     driver_hash = hash_paths([driver / "cbench.h", driver / "bench_zlibng.c"])
     key_data = [
@@ -306,8 +326,8 @@ def build_zlibng(config: Config, target: str, zig_version: str) -> Build:
         settings["zig_cpu"],
         zig_version,
         ZLIBNG_VERSION,
-        ZLIBNG_SHA256,
-        "v1",
+        source.tree_hash,
+        "v2",
     ]
 
     def install(temporary: Path) -> None:
@@ -322,7 +342,7 @@ def build_zlibng(config: Config, target: str, zig_version: str) -> Build:
             [
                 "cmake",
                 "-S",
-                str(source),
+                str(source.path),
                 "-B",
                 str(library),
                 "-DCMAKE_SYSTEM_NAME=Linux",
@@ -355,7 +375,7 @@ def build_zlibng(config: Config, target: str, zig_version: str) -> Build:
                 f'-DZIG_VERSION="{zig_version}"',
                 f'-DCOMPETITOR_VERSION="{ZLIBNG_VERSION}"',
                 f"-I{library}",
-                f"-I{source}",
+                f"-I{source.path}",
                 str(driver / "bench_zlibng.c"),
                 str(library / "libz.a"),
                 "-o",
@@ -369,9 +389,8 @@ def build_zlibng(config: Config, target: str, zig_version: str) -> Build:
     return Build("zlibng", target, prefix, prefix / "bin" / "bench-zlibng", sha_key(key_data))
 
 
-def build_googlesnappy(config: Config, target: str, zig_version: str) -> Build:
+def build_googlesnappy(config: Config, source: Vendor, target: str, zig_version: str) -> Build:
     settings = config.targets[target]
-    source = vendor(config, "snappy-1.3.1", SNAPPY_URL, SNAPPY_SHA256)
     driver = config.root / "bench" / "drivers" / "google-snappy"
     harness = config.root / "bench" / "drivers" / "c"
     driver_hash = hash_paths([driver / "bench_snappy.cc", harness / "cbench.h"])
@@ -382,8 +401,8 @@ def build_googlesnappy(config: Config, target: str, zig_version: str) -> Build:
         settings["zig_cpu"],
         zig_version,
         SNAPPY_VERSION,
-        SNAPPY_SHA256,
-        "v1",
+        source.tree_hash,
+        "v2",
     ]
 
     def install(temporary: Path) -> None:
@@ -401,7 +420,7 @@ def build_googlesnappy(config: Config, target: str, zig_version: str) -> Build:
             [
                 "cmake",
                 "-S",
-                str(source),
+                str(source.path),
                 "-B",
                 str(library),
                 "-DCMAKE_SYSTEM_NAME=Linux",
@@ -434,7 +453,7 @@ def build_googlesnappy(config: Config, target: str, zig_version: str) -> Build:
                 f'-DZIG_VERSION="{zig_version}"',
                 f'-DCOMPETITOR_VERSION="{SNAPPY_VERSION}"',
                 f"-I{library}",
-                f"-I{source}",
+                f"-I{source.path}",
                 str(driver / "bench_snappy.cc"),
                 str(library / "libsnappy.a"),
                 "-o",
@@ -450,23 +469,29 @@ def build_googlesnappy(config: Config, target: str, zig_version: str) -> Build:
     )
 
 
-def build_all(config: Config, source: Source, targets: list[str]) -> dict[str, Outcome[Build]]:
+def build_all(
+    config: Config, source: Source, targets: list[str]
+) -> tuple[dict[str, Outcome[Build]], dict[str, Vendor]]:
+    """Cross-build every arm for every target; the vendor pins ride along."""
     zig_version = tool_version(["zig", "version"])
+    vendors = vendor(config)
     pairs = {f"{arm}/{target}": (arm, target) for arm in ARMS for target in targets}
 
     def build(name: str) -> Build:
         arm, target = pairs[name]
-        if arm == "zc":
-            return build_zc(config, source, target, zig_version)
-        if arm == "klauspost":
-            return build_klauspost(config, target)
-        if arm == "libdeflate":
-            return build_libdeflate(config, target, zig_version)
-        if arm == "zlibng":
-            return build_zlibng(config, target, zig_version)
-        return build_googlesnappy(config, target, zig_version)
+        match arm:
+            case "zc":
+                return build_zc(config, source, target, zig_version)
+            case "klauspost":
+                return build_klauspost(config, target)
+            case "libdeflate":
+                return build_libdeflate(config, vendors["libdeflate"], target, zig_version)
+            case "zlibng":
+                return build_zlibng(config, vendors["zlibng"], target, zig_version)
+            case _:
+                return build_googlesnappy(config, vendors["googlesnappy"], target, zig_version)
 
-    return parallel(pairs, build, workers=os.cpu_count() or 1)
+    return parallel(pairs, build, workers=os.cpu_count() or 1), vendors
 
 
 def arm_revisions(source: Source) -> dict[str, str]:
@@ -480,7 +505,9 @@ def arm_revisions(source: Source) -> dict[str, str]:
     }
 
 
-def provenance(source: Source, results: dict[str, Outcome[Build]]) -> dict[str, Any]:
+def provenance(
+    source: Source, results: dict[str, Outcome[Build]], vendors: dict[str, Vendor]
+) -> dict[str, Any]:
     return {
         "source": {
             "revision": source.revision,
@@ -489,9 +516,15 @@ def provenance(source: Source, results: dict[str, Outcome[Build]]) -> dict[str, 
         },
         "competitors": {
             "klauspost": {"module": "github.com/klauspost/compress", "version": KLAUSPOST_VERSION},
-            "libdeflate": {"version": LIBDEFLATE_VERSION, "sha256": LIBDEFLATE_SHA256},
-            "zlib-ng": {"version": ZLIBNG_VERSION, "sha256": ZLIBNG_SHA256},
-            "google-snappy": {"version": SNAPPY_VERSION, "sha256": SNAPPY_SHA256},
+            "libdeflate": {
+                "version": LIBDEFLATE_VERSION,
+                "tree_sha256": vendors["libdeflate"].tree_hash,
+            },
+            "zlib-ng": {"version": ZLIBNG_VERSION, "tree_sha256": vendors["zlibng"].tree_hash},
+            "google-snappy": {
+                "version": SNAPPY_VERSION,
+                "tree_sha256": vendors["googlesnappy"].tree_hash,
+            },
         },
         "builds": {
             key: {

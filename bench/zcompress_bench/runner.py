@@ -139,8 +139,8 @@ def run(  # noqa: C901, PLR0915 — orchestration keeps the experiment lifecycle
     )
     write_manifest(path, manifest)
     progress("cross builds")
-    builds = build_all(config, source, names)
-    manifest.update(provenance(source, builds))
+    builds, vendors = build_all(config, source, names)
+    manifest.update(provenance(source, builds, vendors))
     write_manifest(path, manifest)
     outputs = fleet.outputs()
 

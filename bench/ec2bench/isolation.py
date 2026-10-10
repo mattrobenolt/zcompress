@@ -1,7 +1,7 @@
 """Reserve the final physical core and restore the original cpuset properties."""
 
 import shlex
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
 
@@ -73,7 +73,7 @@ def run_isolated(
 
 
 @contextmanager
-def isolate(box: Box, topology: list[dict[str, Any]]) -> Iterator[int]:
+def isolate(box: Box, topology: list[dict[str, Any]]) -> Generator[int]:
     cpu, housekeeping = select_cpu(topology)
     # The directory is an atomic claim across harness processes. A stale claim fails closed.
     box.run("mkdir /run/ec2bench-isolation.lock 2>/dev/null || { echo 'box busy' >&2; exit 1; }")

@@ -5,7 +5,7 @@ default: test
 
 # Unit tests for every codec
 test:
-    zig build test
+    ZTEST_VERBOSE=1 zig build test
 
 # Fuzz every codec's targets for an iteration budget (K/M/G suffix, e.g.
 # `just fuzz 1M`). ReleaseSafe only: a Debug-mode fuzz run hits
@@ -84,7 +84,7 @@ example example *args:
 
 # Clean build artifacts
 clean:
-    rm -rf zig-out .zig-cache zig-pkg
+    rm -rf zig-out .zig-cache zig-pkg bench/zig-out bench/.zig-cache bench/zig-pkg
 
 # Benchmark fleet: the bench/ harness (bench/README.md). The fleet shares the
 # fastmem-bench IAM user and launch templates (see bench.toml); every fleet
@@ -92,29 +92,38 @@ clean:
 export AWS_PROFILE := env("AWS_PROFILE", "fastmem-bench")
 
 # Run any harness command (e.g. just b ls, just b up c8g --ttl 2h, just b analyze <run-dir>)
+[working-directory("bench")]
 b *ARGS:
-    uv run --project bench bench {{ ARGS }}
+    uv run bench {{ ARGS }}
 
 # Launch boxes (e.g. just bench-up c8g c7i, or just bench-up for every target)
+[working-directory("bench")]
 bench-up *TARGETS:
-    uv run --project bench bench up {{ if TARGETS == "" { "c7i c8i c7a c8a c7g c8g c9g" } else { TARGETS } }}
+    uv run bench up {{ if TARGETS == "" { "c7i c8i c7a c8a c7g c8g c9g" } else { TARGETS } }}
 
 # Terminate every box of the fleet
+[working-directory("bench")]
 bench-down:
-    uv run --project bench bench down --all
+    uv run bench down --all
 
 # Show the fleet
+[working-directory("bench")]
 bench-ls:
-    uv run --project bench bench ls
+    uv run bench ls
 
 # Correctness gate on every running box (bench/README.md)
+[working-directory("bench")]
 bench-test *ARGS:
-    uv run --project bench bench test {{ ARGS }}
+    uv run bench test {{ ARGS }}
 
 # Measure on every running box (e.g. just bench-run --up --rounds 5 --label m3)
+[working-directory("bench")]
 bench-run *ARGS:
-    uv run --project bench bench run {{ ARGS }}
+    uv run bench run {{ ARGS }}
 
 # Harness checks: lint, format, types
+[working-directory("bench")]
 bench-check:
-    cd bench && uv run ruff check . && uv run ruff format --check . && uv run ty check
+    uv --preview-features format-command format
+    uv --preview-features format-command format --check
+    uv --preview-features check-command check
