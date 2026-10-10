@@ -34,6 +34,11 @@ const fastmem = @import("fastmem");
 
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
+/// The optional checksum hook's type (`Checksum.zig`, README "Checksum
+/// hook"): a container's state plus its byte-fold function, named here so a
+/// container can name it through this namespace (type identity across build
+/// modules) and assign it to `checksum` before the first write.
+pub const Checksum = @import("Checksum.zig");
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
 const max_block_size = encode.max_block_size;
@@ -46,12 +51,6 @@ const golden = @import("golden.zig");
 /// history sits at the front and the block after it, so the encoder's window
 /// — history followed by block — is one contiguous slice.
 pub const Buffer = [max_block_size + history_len]u8;
-
-/// The optional checksum hook's type (`Checksum.zig`, README "Checksum
-/// hook"): a container's state plus its byte-fold function, named here so a
-/// container can name it through this namespace (type identity across build
-/// modules) and assign it to `checksum` before the first write.
-pub const Checksum = @import("Checksum.zig").Checksum;
 
 /// The compressed-output scratch for one block: the exact worst case
 /// (`maxCompressedLength(max_block_size)`), so the encoder cannot run out of

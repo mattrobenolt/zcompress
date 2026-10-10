@@ -33,6 +33,13 @@ const fastmem = @import("fastmem");
 
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
+const State = internal.reader.State;
+const VTable = internal.reader.VTable;
+/// The optional checksum hook's type (`Checksum.zig`, README "Checksum
+/// hook"): a container's state plus its byte-fold function, named here so a
+/// container can name it through this namespace (type identity across build
+/// modules) and assign it to `checksum` before the first read.
+pub const Checksum = @import("Checksum.zig");
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
 const history_len = encode.history_len;
@@ -52,12 +59,6 @@ const max_peek_bits: u6 = 16;
 /// `history_len` bytes of it are the match history (`§3.2.3`), the rest is
 /// fresh output; there is no compressed staging region.
 pub const Buffer = [2 * history_len]u8;
-
-/// The optional checksum hook's type (`Checksum.zig`, README "Checksum
-/// hook"): a container's state plus its byte-fold function, named here so a
-/// container can name it through this namespace (type identity across build
-/// modules) and assign it to `checksum` before the first read.
-pub const Checksum = @import("Checksum.zig").Checksum;
 
 /// The detailed error recorded once `state == .failed` (the interface reports
 /// `error.ReadFailed`): `decode.DecompressError` minus `BufferTooSmall` — the
@@ -211,7 +212,7 @@ distance: decode.DistDecoder = .{},
 /// The stream lifecycle (src/internal/reader.zig): `streaming` until the
 /// final block's output is complete (`done`) or a failure sticks (`failed`,
 /// details in `err`).
-state: internal.reader.State = .streaming,
+state: State = .streaming,
 /// Detailed error once `state == .failed`; the interface reports
 /// `error.ReadFailed`.
 err: ?Error = null,
@@ -220,7 +221,7 @@ err: ?Error = null,
 /// pattern book"): the sticky guard, the zero-length poll, and the
 /// fill-and-return-0 count are structural. `fill` is the pump; `rebase`
 /// owns the window's capacity policy.
-const vtable = internal.reader.VTable(Reader, fill, rebase).vtable;
+const vtable = VTable(Reader, fill, rebase).vtable;
 
 /// Wrap `input` (a raw deflate stream) with `buffer` as the decoded window.
 /// Consume through `&r.reader` (`stream`, `read`-family, `peek`-family); the

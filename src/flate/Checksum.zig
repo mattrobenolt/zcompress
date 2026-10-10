@@ -18,7 +18,7 @@
 //! `src/internal/checksum.zig` is reserved for the shared checksum kernels
 //! (`src/gzip/README.md`, "The checksums").
 
-pub const Checksum = @This();
+const Checksum = @This();
 
 /// The container's checksum state, untyped: the codec never inspects it and
 /// never allocates for it. The container guarantees it outlives the codec

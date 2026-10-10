@@ -30,6 +30,18 @@ and dependency with a license that is not ours.
   verbatim from golang/go (BSD-3-Clause)
   `src/compress/flate/testdata/`. Attribution: Copyright the Go Authors,
   https://github.com/golang/go.
+- `src/gzip/golden.zig` golden fixtures: ported from golang/go
+  (BSD-3-Clause) `src/compress/gzip/gunzip_test.go` (`gunzipTests`,
+  `TestTruncatedStreams`, `TestIssue6550`, `TestMultistreamFalse`,
+  `TestNilStream`, `TestCVE202230631`) and `gzip_test.go` (`TestEmpty`,
+  `TestWriterFlush`, as policy fixtures), plus Zig 0.16 std's in-tree gzip
+  container tests (`std/compress/flate/Decompress.zig`, MIT) as decoder
+  goldens and divergence pins. Attribution: Copyright the Go Authors,
+  https://github.com/golang/go; Zig std contributors.
+- `src/gzip/testdata/issue6550.gz.base64`: vendored verbatim from golang/go
+  (BSD-3-Clause) `src/compress/gzip/testdata/issue6550.gz.base64` — the
+  decompression-hang regression's input. Attribution: Copyright the Go
+  Authors, https://github.com/golang/go.
 - `src/flate/decode.zig` lineage: the two-level Huffman decode table (a
   9-bit primary table plus a chained chase for longer codes) follows the
   algorithm in zlib's `doc/algorithm.txt` (zlib license, studied), as used by

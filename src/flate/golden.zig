@@ -27,7 +27,7 @@ const fastmem = @import("fastmem");
 
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
-const checksum = @import("Checksum.zig");
+const Checksum = @import("Checksum.zig");
 const decode = @import("decode.zig");
 const decompress = decode.decompress;
 const DecompressError = decode.DecompressError;
@@ -562,12 +562,12 @@ fn readBits(stream: []const u8, bit: usize, comptime count: u6) u64 {
 /// The checksum hook's test double (README, "Checksum hook"): an
 /// order-sensitive synthetic fold, `value = value * 31 + byte`, that is no
 /// real checksum — it exists to witness that the hook saw every byte exactly
-/// once, in stream order. `checksum.Checksum` is the interface it stands in
+/// once, in stream order. `Checksum` is the interface it stands in
 /// for; the containers bring real CRC-32/Adler-32 kernels.
 pub const TestChecksum = struct {
     value: u64 = 0,
 
-    /// The hook's update entry (`checksum.Checksum.update_fn`).
+    /// The hook's update entry (`Checksum.update_fn`).
     pub fn update(context: *anyopaque, bytes: []const u8) void {
         const self: *TestChecksum = @ptrCast(@alignCast(context));
         for (bytes) |byte| self.value = self.value *% 31 +% byte;
@@ -581,7 +581,7 @@ pub const TestChecksum = struct {
     }
 
     /// The hook over this state.
-    pub fn hook(self: *TestChecksum) checksum.Checksum {
+    pub fn hook(self: *TestChecksum) Checksum {
         return .{ .context = self, .update_fn = update };
     }
 };

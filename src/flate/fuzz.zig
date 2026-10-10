@@ -463,6 +463,15 @@ test "flate fuzz: one-shot round trip" {
 /// slides repeatedly and the writer emits multiple blocks.
 const stream_max: usize = 128 * 1024;
 
+/// The mid-stream flush budget: how many Smith-chosen flushes the stream
+/// target's writer loop may take. Every flush ends the current block and
+/// every block costs at most 5 stored-header bytes beyond its input (the
+/// stored-block fallback, README "Encoder"), so each flushed block grows
+/// the stream past the no-flush `maxCompressedLength` bound by at most 5
+/// bytes — `framed` below carries `5 * flush_budget` of headroom for
+/// exactly this (the bound itself budgets only the unflushed block count).
+const flush_budget: usize = 16;
+
 /// Marker bytes appended after a stream to prove the reader stops at the
 /// stream's last byte (README, "Streaming"): the format is self-delimiting, so
 /// bytes after BFINAL are not the reader's to consume.
@@ -496,7 +505,10 @@ fn fuzzStreamRoundTrip(_: void, smith: *Smith) anyerror!void {
     try expectT4Ending(stream);
 
     // The exact-boundary property: the stream followed by marker bytes.
-    var framed: [encode.maxCompressedLength(stream_max) + marker_len]u8 = undefined;
+    var framed: [
+        encode.maxCompressedLength(stream_max) +
+            marker_len + 5 * flush_budget
+    ]u8 = undefined;
     try testing.expect(stream.len <= framed.len - marker_len);
     fastmem.copy(u8, framed[0..stream.len], stream);
     fastmem.set(u8, framed[stream.len..], marker_byte);
@@ -516,11 +528,15 @@ fn fuzzStreamRoundTrip(_: void, smith: *Smith) anyerror!void {
     var wbuf: Writer.Buffer = undefined;
     var w: Writer = .init(&compressed2.writer, &wbuf, .{ .level = level });
     var pos: usize = 0;
+    var flushes: usize = 0;
     while (pos < input.len) {
         const n = @min(input.len - pos, rangeAtMost(smith, 1, 32 * 1024));
         try w.writer.writeAll(input[pos..][0..n]);
         pos += n;
-        if (smith.boolWeighted(1, 3)) try w.writer.flush();
+        if (flushes < flush_budget and smith.boolWeighted(1, 3)) {
+            try w.writer.flush();
+            flushes += 1;
+        }
     }
     try w.finish();
     const stream2 = compressed2.written();

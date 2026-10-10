@@ -35,6 +35,18 @@ check-baseline:
     zig build check -Dtarget=riscv64-linux
     zig build check -Dtarget=wasm32-wasi
 
+# External-oracle lane for gzip: python3's zlib (the C reference, the wbits
+# 31 gzip wrapper), the CPython gzip module, and the gzip/gunzip 1.14 CLIs
+# cross-check our members in both directions (our encode -> their decode,
+# theirs -> our decode) over generated shapes and levels, plus the FHCRC
+# verification, the single-member boundary, the trailing-garbage fail-closed
+# pin, and the streaming rows through the example CLI's caller loop. The
+# incantations are docs/research/containers-notes.md §5.5; the harness is
+# src/gzip/oracle.zig.
+gzip-oracle:
+    zig build gzip-oracle-harness
+    uv run scripts/gzip_oracle.py
+
 # External-oracle lane for flate: python3's zlib cross-checks the committed
 # fixtures and freshly generated shapes in both directions, raw deflate
 # (wbits=-15) — the incantations of docs/research/flate-notes.md §4.3. Both

@@ -21,6 +21,8 @@ const DefaultPrng = std.Random.DefaultPrng;
 const fastmem = @import("fastmem");
 
 const internal = @import("../internal/root.zig");
+const VTable = internal.reader.VTable;
+const State = internal.reader.State;
 const common = @import("common.zig");
 const readInt = common.readInt;
 const decode = @import("decode.zig");
@@ -53,7 +55,7 @@ staging: *[Writer.scratch_len]u8,
 /// The stream lifecycle (src/internal/reader.zig): `streaming` until the
 /// input ends cleanly at a block boundary (`done`) or a failure sticks
 /// (`failed`, details in `err`).
-state: internal.reader.State = .streaming,
+state: State = .streaming,
 /// Detailed error once `state == .failed`; the interface reports
 /// `error.ReadFailed`.
 err: ?Error = null,
@@ -62,7 +64,7 @@ err: ?Error = null,
 /// pattern book"): the sticky guard, the zero-length poll, and the
 /// fill-and-return-0 count are structural. `fillNextBlock` is the pump;
 /// `rebase` owns the region's capacity policy.
-const vtable = internal.reader.VTable(Reader, fillNextBlock, rebase).vtable;
+const vtable = VTable(Reader, fillNextBlock, rebase).vtable;
 
 /// Wrap `input` (a framed snappy stream) with `buffer` for decoded output.
 /// Consume through `&r.reader` (`stream`, `read`-family, `peek`-family);
