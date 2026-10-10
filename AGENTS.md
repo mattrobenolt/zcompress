@@ -139,7 +139,16 @@ patterns into every codec:
   (`assert(source.len >= input_margin)` — the gate above guarantees it) and
   postconditions (`assert(w.writer.end == 0)` after an emit). Hostile input
   gets error returns, never asserts.
-- Zero dynamic allocation; comptime-sized stack scratch.
+- Zero dynamic allocation; comptime-sized stack scratch. Stack scratch is
+  KiB-scale (tens of KiB at most — flate's 64 KiB window, zstd's 128 KiB
+  literals scratch). A large buffer is never a stack local: the caller
+  heap-allocates it (the arena pattern, the zstd example after its
+  8.4 MiB DefaultBuffer segfaulted under a real 8 MiB `ulimit -s 8192` —
+  it had only worked because the dev box's stack was bigger). If an API's
+  buffer is MiB-scale, the API takes the buffer from the caller (the
+  zstd `streamFrame`/`streamAll` shape) or an allocator argument — an open
+  design question while the house rule stands that streaming layers take
+  no allocator and the caller provides buffers.
 - Batching: whole blocks through the data plane; framing is the control
   plane.
 
