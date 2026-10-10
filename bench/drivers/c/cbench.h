@@ -1,11 +1,17 @@
-/* Shared harness for the C competitor arms (bench/README.md). The driver
- * .c file defines impl_compress/impl_decompress and the ARM/IMPL/TOOL
- * strings, then includes this header. Same CLI, corpus, and schema-v1
- * JSONL as the zcompress driver: one process is one round of this arm.
+/* Shared harness for the native competitor arms (bench/README.md): the C
+ * drivers (libdeflate, zlib-ng) and the C++ driver (google/snappy). The
+ * driver defines impl_compress/impl_decompress, the ARM/IMPL/TOOL strings,
+ * and the codec set (CBENCH_CODECS, CBENCH_CODEC_COUNT), then includes
+ * this header. Same CLI, corpus, and schema-v1 JSONL as the zcompress
+ * driver: one process is one round of this arm.
  *
  * Decompression rows decode the committed reference blobs; the warmup pass
  * of each cell verifies the round trip; --check runs the whole matrix as
  * the correctness gate and prints one JSON summary line.
+ *
+ * The header compiles as C and as C++ (the google/snappy driver is a C++
+ * translation unit); the driver's definitions precede the include, so no
+ * prototypes are needed.
  */
 #ifndef CBENCH_H
 #define CBENCH_H
@@ -16,9 +22,20 @@
 #include <stdint.h>
 #include <time.h>
 
+/* The driver's codec set and the compiler line in the meta record. The
+ * flate-family default covers the C arms; the google/snappy driver
+ * overrides both before including this header. */
+#ifndef CBENCH_CODECS
+#define CBENCH_CODECS {"flate", "gzip", "zlib"}
+#define CBENCH_CODEC_COUNT 3
+#endif
+#ifndef CBENCH_TOOLCHAIN
+#define CBENCH_TOOLCHAIN "zig cc"
+#endif
+
 static const char *const shapes[] = {"text", "random", "html", "rle", "mixed"};
 static const size_t shape_sizes[] = {32 * 1024, 64 * 1024};
-static const char *const codecs[] = {"flate", "gzip", "zlib"};
+static const char *const codecs[] = CBENCH_CODECS;
 static const char *const directions[] = {"compress", "decompress"};
 
 struct cbench_options {
@@ -35,8 +52,8 @@ struct cbench_case {
     const char *shape;
     size_t size;
     unsigned char *raw;
-    unsigned char *blobs[3]; /* flate, gzip, zlib */
-    size_t blob_lens[3];
+    unsigned char *blobs[CBENCH_CODEC_COUNT]; /* one per codec, in codecs[] order */
+    size_t blob_lens[CBENCH_CODEC_COUNT];
 };
 
 static const char *blob_ext(const char *codec)
@@ -55,7 +72,7 @@ static unsigned char *read_file(const char *dir, const char *name, size_t *len)
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
-    unsigned char *buf = malloc((size_t)n ? (size_t)n : 1);
+    unsigned char *buf = (unsigned char *)malloc((size_t)n ? (size_t)n : 1);
     if (!buf || fread(buf, 1, (size_t)n, f) != (size_t)n) {
         fprintf(stderr, "read %s failed\n", path);
         exit(1);
@@ -75,7 +92,7 @@ static void load_case(struct cbench_options *o, const char *shape, size_t size,
     c->size = size;
     c->raw = read_file(o->corpus, base, &n);
     if (n != size) { fprintf(stderr, "corpus size mismatch: %s\n", base); exit(1); }
-    for (int k = 0; k < 3; k++) {
+    for (int k = 0; k < CBENCH_CODEC_COUNT; k++) {
         snprintf(name, sizeof name, "%s.%s", base, blob_ext(codecs[k]));
         c->blobs[k] = read_file(o->corpus, name, &c->blob_lens[k]);
     }
@@ -240,8 +257,8 @@ static int check_cell(struct cbench_case *c, int k, unsigned char *target,
 
 static void run_check(struct cbench_options *o)
 {
-    unsigned char *target = malloc(CBENCH_TARGET_CAP);
-    unsigned char *decoded = malloc(64 * 1024);
+    unsigned char *target = (unsigned char *)malloc(CBENCH_TARGET_CAP);
+    unsigned char *decoded = (unsigned char *)malloc(64 * 1024);
     const char *detail = "";
     int checked = 0;
     size_t count = !strcmp(o->suite, "quick") ? 1 : 2;
@@ -250,12 +267,12 @@ static void run_check(struct cbench_options *o)
         for (size_t z = 0; z < count && !*detail; z++) {
             struct cbench_case c;
             load_case(o, shapes[s], shape_sizes[z], &c);
-            for (int k = 0; k < 3; k++) {
+            for (int k = 0; k < CBENCH_CODEC_COUNT; k++) {
                 if (!any_row(o, codecs[k], c.shape, c.size)) continue;
                 checked++;
                 if (check_cell(&c, k, target, decoded, &detail)) break;
             }
-            for (int k = 0; k < 3; k++) free(c.blobs[k]);
+            for (int k = 0; k < CBENCH_CODEC_COUNT; k++) free(c.blobs[k]);
             free(c.raw);
         }
     }
@@ -271,7 +288,8 @@ static void run_check(struct cbench_options *o)
 static void write_meta(struct cbench_options *o)
 {
     printf("{\"type\":\"meta\",\"schema\":1,\"arm\":\"%s\",\"tool\":\"%s\","
-           "\"rev\":\"%s\",\"toolchain\":\"zig cc %s\",\"target\":\"%s\",\"cpu\":\"%s\","
+           "\"rev\":\"%s\",\"toolchain\":\"" CBENCH_TOOLCHAIN
+           " %s\",\"target\":\"%s\",\"cpu\":\"%s\","
            "\"optimize\":\"release\",\"suite\":\"%s\",\"seed\":%llu,\"samples\":%d,"
            "\"sample_ms\":%ld,\"impls\":[\"%s\"],\"corpus\":{",
            ARM, TOOL, COMPETITOR_VERSION, ZIG_VERSION, CBENCH_TARGET, CBENCH_CPU,
@@ -319,8 +337,8 @@ static void measure(struct cbench_options *o, struct cbench_case *c, int k,
 
 static void run_measure(struct cbench_options *o)
 {
-    unsigned char *target = malloc(CBENCH_TARGET_CAP);
-    unsigned char *decoded = malloc(64 * 1024);
+    unsigned char *target = (unsigned char *)malloc(CBENCH_TARGET_CAP);
+    unsigned char *decoded = (unsigned char *)malloc(64 * 1024);
     size_t count = !strcmp(o->suite, "quick") ? 1 : 2;
     int cases = 0;
     write_meta(o);
@@ -334,7 +352,7 @@ static void run_measure(struct cbench_options *o)
             const char *detail = "";
             /* Warmup: one pass per cell; verifies the round trip once per
              * process. A failure stops the run. */
-            for (int k = 0; k < 3; k++) {
+            for (int k = 0; k < CBENCH_CODEC_COUNT; k++) {
                 if (!any_row(o, codecs[k], c.shape, c.size)) continue;
                 counted++;
                 if (check_cell(&c, k, target, decoded, &detail)) {
@@ -343,17 +361,17 @@ static void run_measure(struct cbench_options *o)
                 }
             }
             if (!counted) {
-                for (int k = 0; k < 3; k++) free(c.blobs[k]);
+                for (int k = 0; k < CBENCH_CODEC_COUNT; k++) free(c.blobs[k]);
                 free(c.raw);
                 continue;
             }
             cases += counted;
             for (int sample = 0; sample < o->samples; sample++)
-                for (int k = 0; k < 3; k++)
+                for (int k = 0; k < CBENCH_CODEC_COUNT; k++)
                     for (int d = 0; d < 2; d++)
                         if (row_selected(o, codecs[k], directions[d], c.shape, c.size))
                             measure(o, &c, k, directions[d], sample, target);
-            for (int k = 0; k < 3; k++) free(c.blobs[k]);
+            for (int k = 0; k < CBENCH_CODEC_COUNT; k++) free(c.blobs[k]);
             free(c.raw);
         }
     }
@@ -366,10 +384,15 @@ static void run_measure(struct cbench_options *o)
 
 int main(int argc, char **argv)
 {
-    struct cbench_options o = {
-        .corpus = NULL, .suite = "standard", .seed = 0,
-        .samples = 5, .sample_ms = 100, .filter = NULL, .check = 0,
-    };
+    /* Field assignments, not a designated initializer: valid C++ too. */
+    struct cbench_options o;
+    o.corpus = NULL;
+    o.suite = "standard";
+    o.seed = 0;
+    o.samples = 5;
+    o.sample_ms = 100;
+    o.filter = NULL;
+    o.check = 0;
     for (int i = 1; i < argc; i++) {
         const char *value = i + 1 < argc ? argv[i + 1] : "";
         if (!strcmp(argv[i], "--corpus")) { o.corpus = value; i++; }

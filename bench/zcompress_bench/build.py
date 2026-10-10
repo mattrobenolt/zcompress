@@ -1,12 +1,12 @@
-"""Source resolution and content-addressed cross builds for the four arms.
+"""Source resolution and content-addressed cross builds for the five arms.
 
 Every arm cross-builds on this host; the boxes only execute. The zc arm is
 `zig build fleet-bench` from the measured source tree. The klauspost arm is
 `go build` of bench/drivers/klauspost (the module pins klauspost/compress to
-the research's local checkout commit). The libdeflate and zlib-ng arms fetch
-their pinned release tarballs (sha256 below) and compile with `zig cc`
-(zlib-ng configures through cmake with a zig-cc toolchain wrapper; the
-flake provides cmake and go).
+the research's local checkout commit). The libdeflate, zlib-ng, and
+google/snappy arms fetch their pinned release tarballs (sha256 below) and
+compile with `zig cc`/`zig c++` (zlib-ng and google/snappy configure through
+cmake with zig toolchain wrappers; the flake provides cmake and go).
 """
 
 import errno
@@ -26,8 +26,9 @@ from ec2bench.config import Config
 from ec2bench.parallel import Outcome, parallel
 from ec2bench.runs import git
 
-ARMS = ("zc", "klauspost", "libdeflate", "zlibng")
-# The competitor pins (docs/research/containers-notes.md names the sources).
+ARMS = ("zc", "klauspost", "libdeflate", "zlibng", "googlesnappy")
+# The competitor pins (docs/research/containers-notes.md names the sources;
+# google/snappy is docs/zcompress-plan.md's pinned snappy competitor).
 LIBDEFLATE_VERSION = "v1.26"
 LIBDEFLATE_URL = (
     f"https://github.com/ebiggers/libdeflate/archive/refs/tags/{LIBDEFLATE_VERSION}.tar.gz"
@@ -36,6 +37,9 @@ LIBDEFLATE_SHA256 = "bba03fffc5538576213675ce6968fcff6ce2e67d82e4d5febea2d05f9f1
 ZLIBNG_VERSION = "2.3.3"
 ZLIBNG_URL = f"https://github.com/zlib-ng/zlib-ng/archive/refs/tags/{ZLIBNG_VERSION}.tar.gz"
 ZLIBNG_SHA256 = "f9c65aa9c852eb8255b636fd9f07ce1c406f061ec19a2e7d508b318ca0c907d1"
+SNAPPY_VERSION = "1.3.1"
+SNAPPY_URL = f"https://github.com/google/snappy/archive/refs/tags/{SNAPPY_VERSION}.tar.gz"
+SNAPPY_SHA256 = "893f708a0bf4b5529d555ffcee390e940e932fcf90261f682604475a76cd0247"
 # The local research checkout (~/code/klauspost-compress), pinned in go.mod.
 KLAUSPOST_VERSION = "v1.18.1-0.20250402062133-8df4d013ff17"
 
@@ -365,6 +369,87 @@ def build_zlibng(config: Config, target: str, zig_version: str) -> Build:
     return Build("zlibng", target, prefix, prefix / "bin" / "bench-zlibng", sha_key(key_data))
 
 
+def build_googlesnappy(config: Config, target: str, zig_version: str) -> Build:
+    settings = config.targets[target]
+    source = vendor(config, "snappy-1.3.1", SNAPPY_URL, SNAPPY_SHA256)
+    driver = config.root / "bench" / "drivers" / "google-snappy"
+    harness = config.root / "bench" / "drivers" / "c"
+    driver_hash = hash_paths([driver / "bench_snappy.cc", harness / "cbench.h"])
+    key_data = [
+        "googlesnappy",
+        driver_hash,
+        settings["zig_target"],
+        settings["zig_cpu"],
+        zig_version,
+        SNAPPY_VERSION,
+        SNAPPY_SHA256,
+        "v1",
+    ]
+
+    def install(temporary: Path) -> None:
+        # cmake wants single compiler paths: wrap the zig cc / zig c++ cross
+        # flags. The driver is a C++ translation unit (the google/snappy API
+        # is C++), built by the same wrapper's c++ mode.
+        cc = temporary / "zig-cc"
+        cc.write_text('#!/bin/sh\nexec zig cc {} "$@"\n'.format(" ".join(target_flags(settings))))
+        cc.chmod(0o755)
+        cxx = temporary / "zig-cxx"
+        cxx.write_text('#!/bin/sh\nexec zig c++ {} "$@"\n'.format(" ".join(target_flags(settings))))
+        cxx.chmod(0o755)
+        library = temporary / "snappy-build"
+        checked(
+            [
+                "cmake",
+                "-S",
+                str(source),
+                "-B",
+                str(library),
+                "-DCMAKE_SYSTEM_NAME=Linux",
+                "-DCMAKE_SYSTEM_PROCESSOR="
+                + ("aarch64" if settings["arch"] == "arm64" else "x86_64"),
+                f"-DCMAKE_C_COMPILER={cc}",
+                f"-DCMAKE_CXX_COMPILER={cxx}",
+                "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
+                "-DSNAPPY_BUILD_TESTS=OFF",
+                "-DSNAPPY_BUILD_BENCHMARKS=OFF",
+                "-DBUILD_SHARED_LIBS=OFF",
+                "-DCMAKE_BUILD_TYPE=Release",
+            ],
+            config.root,
+            temporary / "cmake-configure.log",
+        )
+        checked(
+            ["cmake", "--build", str(library), "-j", str(os.cpu_count() or 1)],
+            config.root,
+            temporary / "cmake-build.log",
+        )
+        (temporary / "bin").mkdir()
+        checked(
+            [
+                "zig",
+                "c++",
+                *cc_flags(settings),
+                f'-DCBENCH_TARGET="{settings["zig_target"]}"',
+                f'-DCBENCH_CPU="{settings["zig_cpu"]}"',
+                f'-DZIG_VERSION="{zig_version}"',
+                f'-DCOMPETITOR_VERSION="{SNAPPY_VERSION}"',
+                f"-I{library}",
+                f"-I{source}",
+                str(driver / "bench_snappy.cc"),
+                str(library / "libsnappy.a"),
+                "-o",
+                str(temporary / "bin" / "bench-googlesnappy"),
+            ],
+            config.root,
+            temporary / "build.log",
+        )
+
+    prefix = finalize(config, key_data, install)
+    return Build(
+        "googlesnappy", target, prefix, prefix / "bin" / "bench-googlesnappy", sha_key(key_data)
+    )
+
+
 def build_all(config: Config, source: Source, targets: list[str]) -> dict[str, Outcome[Build]]:
     zig_version = tool_version(["zig", "version"])
     pairs = {f"{arm}/{target}": (arm, target) for arm in ARMS for target in targets}
@@ -377,7 +462,9 @@ def build_all(config: Config, source: Source, targets: list[str]) -> dict[str, O
             return build_klauspost(config, target)
         if arm == "libdeflate":
             return build_libdeflate(config, target, zig_version)
-        return build_zlibng(config, target, zig_version)
+        if arm == "zlibng":
+            return build_zlibng(config, target, zig_version)
+        return build_googlesnappy(config, target, zig_version)
 
     return parallel(pairs, build, workers=os.cpu_count() or 1)
 
@@ -389,6 +476,7 @@ def arm_revisions(source: Source) -> dict[str, str]:
         "klauspost": KLAUSPOST_VERSION,
         "libdeflate": LIBDEFLATE_VERSION,
         "zlibng": ZLIBNG_VERSION,
+        "googlesnappy": SNAPPY_VERSION,
     }
 
 
@@ -403,6 +491,7 @@ def provenance(source: Source, results: dict[str, Outcome[Build]]) -> dict[str, 
             "klauspost": {"module": "github.com/klauspost/compress", "version": KLAUSPOST_VERSION},
             "libdeflate": {"version": LIBDEFLATE_VERSION, "sha256": LIBDEFLATE_SHA256},
             "zlib-ng": {"version": ZLIBNG_VERSION, "sha256": ZLIBNG_SHA256},
+            "google-snappy": {"version": SNAPPY_VERSION, "sha256": SNAPPY_SHA256},
         },
         "builds": {
             key: {

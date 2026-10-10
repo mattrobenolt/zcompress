@@ -22,11 +22,14 @@ via systemd; `ec2bench/isolation.py`):
 | `klauspost` | bench/drivers/klauspost (Go) | klauspost/compress flate/gzip/zlib level 1 + snappy, both directions | `go build`, GOOS=linux per arch; module pins v1.18.1-0.20250402062133-8df4d013ff17 (the research's local checkout commit) |
 | `libdeflate` | bench/drivers/c/bench_libdeflate.c | libdeflate v1.26 gzip/zlib/deflate one-shots, level 1 | `zig cc -static` per target/CPU from the pinned tarball (sha256 in build.py) |
 | `zlibng` | bench/drivers/c/bench_zlibng.c | zlib-ng 2.3.3 streaming (zlib-compat API, windowBits -15/15/31), level 1 | cmake (ZLIB_COMPAT, static) with a zig-cc wrapper, per target/CPU |
+| `googlesnappy` | bench/drivers/google-snappy/bench_snappy.cc | google/snappy 1.3.1 raw blocks (`snappy::RawCompress`/`RawUncompress`), both directions | cmake (static `snappy`) with zig-cc/zig-c++ wrappers, per target/CPU from the pinned tarball (sha256 in build.py) |
 | `aa` | the `zc` binary again | the A/A noise floor | — |
 
-Snappy competitor coverage this run: klauspost only (the cheap rides). The
-M3 claims are the flate family; google/snappy C++ stays out until an M1
-claim needs it.
+Snappy competitor coverage: klauspost plus google/snappy C++ (the plan's
+pinned canonical implementation, `docs/zcompress-plan.md`, "Benchmark
+methodology"), both over raw blocks. The M3 run carried klauspost only —
+the results file records that gap — and the google/snappy rows ride the M4
+fleet run.
 
 ## Corpus
 
@@ -47,7 +50,7 @@ target, cpu, optimize, suite, seed, samples, sample_ms, impls, corpus
 hashes), one `sample` record per (case, impl, sample) — case is
 `<codec>/<direction>/<shape>/<size>`, plus iters, ns, out_len — and an `end`
 record. `zcompress_bench/jsonl.py` is the strict contract; every fleet
-driver (Zig, Go, C) emits it.
+driver (Zig, Go, C, C++) emits it.
 
 ## Analysis
 

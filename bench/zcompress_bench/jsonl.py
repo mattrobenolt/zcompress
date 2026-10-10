@@ -2,10 +2,10 @@
 
 A file is a meta record, one sample record per (case, implementation, sample)
 measurement, and an end record. Every fleet driver — the Zig binary
-(bench/zig/bench_zcompress.zig), the Go klauspost driver, and the C
-libdeflate/zlib-ng drivers — emits this exact schema over the exact committed
-corpus. The parser is the contract: a record that does not validate fails the
-round.
+(bench/zig/bench_zcompress.zig), the Go klauspost driver, the C
+libdeflate/zlib-ng drivers, and the C++ google/snappy driver — emits this
+exact schema over the exact committed corpus. The parser is the contract: a
+record that does not validate fails the round.
 """
 
 import json
@@ -16,7 +16,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA = 1
-ARMS = ("zc", "klauspost", "libdeflate", "zlibng")
+ARMS = ("zc", "klauspost", "libdeflate", "zlibng", "googlesnappy")
 CODECS = ("flate", "gzip", "zlib", "snappy")
 DIRECTIONS = ("compress", "decompress")
 SHAPES = ("text", "random", "html", "rle", "mixed")
