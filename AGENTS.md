@@ -174,6 +174,12 @@ Deviations, on purpose:
 - Export named buffer-type constants for every caller-provided buffer
   (ztls pattern), and take exact pointers of them at `init`, not slices with
   asserts.
+- `anytype` is a last resort, strongly discouraged. If a function needs
+  genericity, it takes an explicit `comptime T: type` (or named-type)
+  parameter the caller spells out — the type system checks the call, no
+  runtime assert stands in for it. Duck-typed params hide signatures and
+  push errors to call sites. A stray `anytype` in a diff is a review
+  blocker unless the report says why nothing expressible fits.
 - A single `*Io.Reader`/`*Io.Writer` param is named `input`/`output` (the
   `std.compress.flate` precedent); `in`/`out` name reader/writer pairs.
 - The barrel (`src/root.zig`) exposes exactly one namespace per codec, and
