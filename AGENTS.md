@@ -139,16 +139,17 @@ patterns into every codec:
   (`assert(source.len >= input_margin)` — the gate above guarantees it) and
   postconditions (`assert(w.writer.end == 0)` after an emit). Hostile input
   gets error returns, never asserts.
-- Zero dynamic allocation; comptime-sized stack scratch. Stack scratch is
-  KiB-scale (tens of KiB at most — flate's 64 KiB window, zstd's 128 KiB
-  literals scratch). A large buffer is never a stack local: the caller
+- Minimal allocations, not zero. Allocation is a measured exception, not
+  a ban: compression libraries cannot be strictly zero-allocation. The
+  default discipline stays — caller-owned buffers, comptime KiB-scale
+  stack scratch, setup allocation documented at the API — because it has
+  served the codecs well. But an API taking an allocator where a buffer
+  genuinely cannot be caller-stack-owned is a legitimate design, not a
+  violation (the zstd pump shape question is the live case). Stack scratch
+  is KiB-scale; a large buffer is never a stack local — the caller
   heap-allocates it (the arena pattern, the zstd example after its
   8.4 MiB DefaultBuffer segfaulted under a real 8 MiB `ulimit -s 8192` —
-  it had only worked because the dev box's stack was bigger). If an API's
-  buffer is MiB-scale, the API takes the buffer from the caller (the
-  zstd `streamFrame`/`streamAll` shape) or an allocator argument — an open
-  design question while the house rule stands that streaming layers take
-  no allocator and the caller provides buffers.
+  it had only worked because the dev box's stack was bigger).
 - Batching: whole blocks through the data plane; framing is the control
   plane.
 
@@ -175,11 +176,14 @@ Deviations, on purpose:
   shape (`src/internal/README.md`), and the codec it wraps (gzip/zlib over
   flate, M3). Shared primitives go to `src/internal/` only when two codecs
   need them.
-- Zero heap allocation on codec hot paths. Caller owns buffers; setup
-  allocation is documented at the API. Streaming layers take no allocator at
-  all: caller-provided buffers through exported named buffer types
-  (`snappy.WriterBuffer`, `snappy.ReaderBuffer`), comptime-sized stack scratch
-  — the whole path allocates nothing.
+- Minimal heap allocation on codec hot paths — the codecs as built
+  allocate nothing there, which their READMEs state as fact, not as a
+  standing ban. Caller owns buffers; setup allocation is documented at the
+  API. The streaming layers as built take no allocator (caller-provided
+  buffers through exported named buffer types, comptime KiB-scale stack
+  scratch); an allocator-taking variant is a legitimate design where a
+  buffer cannot be caller-stack-owned — the zstd pump shape is the live
+  question.
 - Export named buffer-type constants for every caller-provided buffer
   (ztls pattern), and take exact pointers of them at `init`, not slices with
   asserts.
