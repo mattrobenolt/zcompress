@@ -36,6 +36,8 @@ const fastmem = @import("fastmem");
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
 const common = @import("common.zig");
+const readInt = common.readInt;
+const writeInt = common.writeInt;
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
 const block_max: usize = encode.max_block_size;
@@ -453,7 +455,7 @@ fn mutateStream(smith: *Smith, buf: []u8, len: *usize) !void {
                     2 => math.maxInt(u32),
                     else => smith.value(u32),
                 };
-                common.writeInt(u32, buf[at..][0..4], value);
+                writeInt(u32, buf[at..][0..4], value);
             },
             .append_bytes => {
                 const extra = @min(buf.len - len.*, rangeAtMost(smith, 0, 64));
@@ -486,7 +488,7 @@ fn referenceDecode(stream: []const u8, plain: *Io.Writer.Allocating) !bool {
     var pos: usize = 0;
     while (pos < stream.len) {
         if (stream.len - pos < 4) return false;
-        const block_len = common.readInt(u32, stream[pos..][0..4]);
+        const block_len = readInt(u32, stream[pos..][0..4]);
         pos += 4;
         if (block_len == 0 or block_len > Writer.scratch_len) return false;
         if (stream.len - pos < block_len) return false;

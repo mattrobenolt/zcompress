@@ -63,6 +63,8 @@ const fastmem = @import("fastmem");
 
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
+const common = @import("common.zig");
+const readInt = common.readInt;
 const flate = @import("../flate/root.zig");
 const zlib = @import("root.zig");
 
@@ -340,7 +342,7 @@ fn expectZlibTrailer(stream: []const u8, source: []const u8) !void {
     const trailer = stream[stream.len - trailer_len ..];
     try testing.expectEqual(
         std.hash.Adler32.hash(source),
-        mem.readInt(u32, trailer[0..4], .big),
+        readInt(u32, trailer[0..4]),
     );
 }
 
@@ -729,7 +731,7 @@ fn checkReader(mutated: []const u8, source: []const u8, meta: Mutated) !void {
             const trailer = mutated[fixed_in.seek - trailer_len .. fixed_in.seek];
             try testing.expectEqual(
                 std.hash.Adler32.hash(got[0..served]),
-                mem.readInt(u32, trailer[0..4], .big),
+                readInt(u32, trailer[0..4]),
             );
             if (meta.expected == .exact_source) {
                 try testing.expectEqualSlices(u8, source, got[0..served]);

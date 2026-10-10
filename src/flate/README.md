@@ -459,7 +459,8 @@ finder), `decode.zig` (inflate, bit reader, and the canonical Huffman
 table construction shared by both sides), `golden.zig` (ported golden
 fixtures, shared by every layer's tests), `Writer.zig` + `Reader.zig` (the
 streaming `Io` layer), `Checksum.zig` (the container checksum hook's
-interface), `bench.zig` (local benchmark), `oracle.zig` (the
+interface), `common.zig` (little-endian integer access), `bench.zig` (local
+benchmark), `oracle.zig` (the
 external-oracle harness behind `just flate-oracle`), `fuzz.zig` (fuzz
 targets).
 

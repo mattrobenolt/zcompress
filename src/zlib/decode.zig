@@ -12,11 +12,12 @@
 
 const std = @import("std");
 const Io = std.Io;
-const mem = std.mem;
 const testing = std.testing;
 
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
+const common = @import("common.zig");
+const readInt = common.readInt;
 const flate = @import("../flate/root.zig");
 const encode = @import("encode.zig");
 const Reader = @import("Reader.zig");
@@ -97,7 +98,7 @@ pub fn readExact(input: *Io.Reader, target: []u8) error{ Truncated, ReadFailed }
 /// FLG, and ADLER32, and provide an error indication if any of these have
 /// incorrect values" (`§2.3`).
 pub fn checkTrailer(trailer: *const [trailer_len]u8, adler: u32) error{WrongChecksum}!void {
-    if (mem.readInt(u32, trailer[0..4], .big) != adler) return error.WrongChecksum;
+    if (readInt(u32, trailer[0..4]) != adler) return error.WrongChecksum;
 }
 
 /// Decode one complete zlib stream from `source` into `target`. `target` is a

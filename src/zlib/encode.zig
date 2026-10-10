@@ -10,13 +10,15 @@
 //! byte-identical for the same input and options.
 
 const std = @import("std");
-const mem = std.mem;
 const testing = std.testing;
 
 const fastmem = @import("fastmem");
 
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
+const common = @import("common.zig");
+const readInt = common.readInt;
+const writeInt = common.writeInt;
 const flate = @import("../flate/root.zig");
 const adler32 = @import("adler32.zig");
 const decode = @import("decode.zig");
@@ -86,7 +88,7 @@ fn fcheck(flevel: u8) u8 {
 /// Emit the 4-byte trailer: the Adler-32 of the uncompressed data (excluding
 /// any dictionary data), u32 most-significant-byte first (`§2.1`, `§2.2`).
 pub fn writeTrailer(target: *[trailer_len]u8, adler: u32) void {
-    mem.writeInt(u32, target[0..4], adler, .big);
+    writeInt(u32, target[0..4], adler);
 }
 
 /// Compress `source` as one complete zlib stream into `target` and return the
@@ -143,11 +145,11 @@ test "encode: the emitted stream is the deterministic one" {
     // most-significant-byte first (§2.1). The reference kernel agrees.
     try testing.expectEqual(
         std.hash.Adler32.hash(source),
-        mem.readInt(u32, stream[len - trailer_len ..][0..4], .big),
+        readInt(u32, stream[len - trailer_len ..][0..4]),
     );
     try testing.expectEqual(
         adler32.adler32(1, source),
-        mem.readInt(u32, stream[len - trailer_len ..][0..4], .big),
+        readInt(u32, stream[len - trailer_len ..][0..4]),
     );
 }
 

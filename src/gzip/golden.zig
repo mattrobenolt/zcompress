@@ -29,6 +29,8 @@ const assert = std.debug.assert;
 
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
+const common = @import("common.zig");
+const readInt = common.readInt;
 const crc32 = @import("crc32.zig");
 const decode = @import("decode.zig");
 
@@ -358,7 +360,7 @@ pub fn expectHeader(member: []const u8, xfl: u8) !void {
     try testing.expectEqual(@as(u8, 0x8b), member[1]);
     try testing.expectEqual(@as(u8, 8), member[2]);
     try testing.expectEqual(@as(u8, 0), member[3]);
-    try testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, member[4..8], .little));
+    try testing.expectEqual(@as(u32, 0), readInt(u32, member[4..8]));
     try testing.expectEqual(xfl, member[8]);
     try testing.expectEqual(@as(u8, 255), member[9]);
 }
@@ -372,15 +374,15 @@ pub fn expectTrailer(member: []const u8, source: []const u8) !void {
     const trailer = member[member.len - decode.trailer_len ..];
     try testing.expectEqual(
         std.hash.crc.Crc32.hash(source),
-        std.mem.readInt(u32, trailer[0..4], .little),
+        readInt(u32, trailer[0..4]),
     );
     try testing.expectEqual(
         crc32.crc32(0, source),
-        std.mem.readInt(u32, trailer[0..4], .little),
+        readInt(u32, trailer[0..4]),
     );
     try testing.expectEqual(
         @as(u32, @truncate(source.len)),
-        std.mem.readInt(u32, trailer[4..8], .little),
+        readInt(u32, trailer[4..8]),
     );
 }
 

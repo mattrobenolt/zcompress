@@ -40,6 +40,8 @@ const Adler32 = std.hash.Adler32;
 const fastmem = @import("fastmem");
 
 const flate = @import("../flate/root.zig");
+const common = @import("common.zig");
+const readInt = common.readInt;
 
 /// §8.2's prime modulus.
 const base: u32 = 65521;
@@ -249,6 +251,6 @@ test "adler32: the streaming accounting through a container trailer" {
     encode.writeTrailer(&trailer, checksum.final());
     try testing.expectEqual(
         Adler32.hash(bytes),
-        std.mem.readInt(u32, &trailer, .big),
+        readInt(u32, &trailer),
     );
 }

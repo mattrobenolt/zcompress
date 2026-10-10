@@ -25,6 +25,7 @@ const VTable = internal.reader.VTable;
 const State = internal.reader.State;
 const common = @import("common.zig");
 const readInt = common.readInt;
+const writeInt = common.writeInt;
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
 const golden = @import("golden.zig");
@@ -365,7 +366,7 @@ test "Reader: a contiguous request past the two-block cap fails closed" {
 /// prefix plus the block. Asserts `buf` can hold the frame.
 fn framedBlock(source: []const u8, buf: []u8) []u8 {
     assert(source.len + 4 <= buf.len);
-    common.writeInt(u32, buf.ptr[0..4], @intCast(source.len));
+    writeInt(u32, buf.ptr[0..4], @intCast(source.len));
     fastmem.copy(u8, buf[4..][0..source.len], source);
     return buf[0 .. 4 + source.len];
 }

@@ -306,7 +306,8 @@ Files (the intended layout; the implementation lanes may split further):
 (the header parse and trailer check, shared by both layers), `Writer.zig` +
 `Reader.zig` (the streaming `Io` layer), `adler32.zig` (the checksum kernel
 boundary), `golden.zig` (ported golden fixtures, shared by every layer's
-tests), `bench.zig` (local benchmark), `fuzz.zig` (fuzz targets).
+tests), `common.zig` (big-endian integer access), `bench.zig` (local
+benchmark), `fuzz.zig` (fuzz targets).
 
 An example CLI (`examples/zlib.zig`, `zig build example-zlib -- encode
 README.md > out`) is a thin streaming pump over this surface, the same shape

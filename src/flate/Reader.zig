@@ -35,6 +35,8 @@ const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
 const State = internal.reader.State;
 const VTable = internal.reader.VTable;
+const common = @import("common.zig");
+const readVarInt = common.readVarInt;
 /// The optional checksum hook's type (`Checksum.zig`, README "Checksum
 /// hook"): a container's state plus its byte-fold function, named here so a
 /// container can name it through this namespace (type identity across build
@@ -125,7 +127,7 @@ const Bits = struct {
         assert(n <= max_peek_bits);
         try self.bufferBits(n);
         const buffered = self.input.buffer[self.input.seek..self.input.end];
-        const window = mem.readVarInt(u64, buffered[0..@min(buffered.len, 8)], .little);
+        const window = readVarInt(u64, buffered[0..@min(buffered.len, 8)]);
         return (window >> self.consumed) & ((@as(u64, 1) << n) - 1);
     }
 

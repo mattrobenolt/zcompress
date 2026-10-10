@@ -28,11 +28,12 @@
 
 const std = @import("std");
 const testing = std.testing;
-const mem = std.mem;
 const assert = std.debug.assert;
 const Crc32 = std.hash.crc.Crc32;
 
 const flate = @import("../flate/root.zig");
+const common = @import("common.zig");
+const readInt = common.readInt;
 
 /// The reflected polynomial (§2.3.3's ISO 3309 CRC-32), bit-reversed for the
 /// LSB-first shift.
@@ -85,10 +86,10 @@ fn fold(raw: u32, bytes: []const u8) u32 {
     while (rest.len >= slice_count) {
         // The first four bytes xor into the state (its four bytes leave over
         // the next four steps); the other twelve enter as independent terms.
-        const w0 = mem.readInt(u32, rest[0..4], .little);
-        const w1 = mem.readInt(u32, rest[4..8], .little);
-        const w2 = mem.readInt(u32, rest[8..12], .little);
-        const w3 = mem.readInt(u32, rest[12..16], .little);
+        const w0 = readInt(u32, rest[0..4]);
+        const w1 = readInt(u32, rest[4..8]);
+        const w2 = readInt(u32, rest[8..12]);
+        const w3 = readInt(u32, rest[12..16]);
         crc ^= w0;
         crc = tables[15][crc & 0xff] ^ tables[14][(crc >> 8) & 0xff] ^
             tables[13][(crc >> 16) & 0xff] ^ tables[12][crc >> 24] ^

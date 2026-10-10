@@ -64,6 +64,9 @@ const fastmem = @import("fastmem");
 const flate = @import("../flate/root.zig");
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
+const common = @import("common.zig");
+const readInt = common.readInt;
+const writeInt = common.writeInt;
 const gzip = @import("root.zig");
 
 // ---------------------------------------------------------------------------
@@ -306,7 +309,7 @@ fn expectGzipHeader(member: []const u8, level: gzip.encode.Level) !void {
     try testing.expectEqual(@as(u8, 8), member[2]);
     try testing.expectEqual(@as(u8, 0), member[3]);
     // MTIME 0: "no time stamp is available" (§2.3.1); little-endian (§2.1).
-    try testing.expectEqual(@as(u32, 0), mem.readInt(u32, member[4..8], .little));
+    try testing.expectEqual(@as(u32, 0), readInt(u32, member[4..8]));
     try testing.expectEqual(xflFor(level), member[8]);
     try testing.expectEqual(@as(u8, 255), member[9]);
 }
@@ -331,11 +334,11 @@ fn expectGzipTrailer(member: []const u8, source: []const u8) !void {
     const trailer = member[member.len - trailer_len ..];
     try testing.expectEqual(
         Crc32.hash(source),
-        mem.readInt(u32, trailer[0..4], .little),
+        readInt(u32, trailer[0..4]),
     );
     try testing.expectEqual(
         @as(u32, @truncate(source.len)),
-        mem.readInt(u32, trailer[4..8], .little),
+        readInt(u32, trailer[4..8]),
     );
 }
 
@@ -724,11 +727,11 @@ fn checkReader(mutated: []const u8, source: []const u8, meta: Mutated) !void {
             const trailer = mutated[fixed_in.seek - trailer_len .. fixed_in.seek];
             try testing.expectEqual(
                 Crc32.hash(got[0..served]),
-                mem.readInt(u32, trailer[0..4], .little),
+                readInt(u32, trailer[0..4]),
             );
             try testing.expectEqual(
                 @as(u32, @truncate(served)),
-                mem.readInt(u32, trailer[4..8], .little),
+                readInt(u32, trailer[4..8]),
             );
             if (meta.expected == .exact_source) {
                 try testing.expectEqualSlices(u8, source, got[0..served]);
@@ -1645,7 +1648,7 @@ test "gzip fuzz: hostile-header pins" {
     fastmem.copy(u8, fhcrc[0..header_len], empty_member[0..header_len]);
     fhcrc[3] = 0x02; // FHCRC
     const hcrc: u16 = @truncate(Crc32.hash(fhcrc[0..header_len]));
-    mem.writeInt(u16, fhcrc[header_len..][0..2], hcrc, .little);
+    writeInt(u16, fhcrc[header_len..][0..2], hcrc);
     fastmem.copy(u8, fhcrc[header_len + 2 ..][0..2], empty_member[10..12]);
     fastmem.set(u8, fhcrc[header_len + 4 ..], 0);
     try testing.expectEqual(@as(usize, 0), try gzip.decode.decompress(&fhcrc, &.{}));

@@ -36,6 +36,8 @@ const assert = std.debug.assert;
 
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
+const common = @import("common.zig");
+const readInt = common.readInt;
 const adler32 = @import("adler32.zig");
 const decode = @import("decode.zig");
 const encode = @import("encode.zig");
@@ -313,11 +315,11 @@ pub fn expectTrailer(stream: []const u8, source: []const u8) !void {
     const trailer = stream[stream.len - encode.trailer_len ..];
     try testing.expectEqual(
         std.hash.Adler32.hash(source),
-        std.mem.readInt(u32, trailer[0..4], .big),
+        readInt(u32, trailer[0..4]),
     );
     try testing.expectEqual(
         adler32.adler32(1, source),
-        std.mem.readInt(u32, trailer[0..4], .big),
+        readInt(u32, trailer[0..4]),
     );
 }
 
@@ -405,12 +407,12 @@ test "golden decode: the oracle-verified emissions" {
     const dictionary = "she sells seashells by the seashore\n";
     try testing.expectEqual(
         @as(u32, 0xFA2C0D48),
-        std.mem.readInt(u32, t5_corner_dict_stream[2..6], .big),
+        readInt(u32, t5_corner_dict_stream[2..6]),
     );
     try testing.expectEqual(@as(u32, 0xFA2C0D48), adler32.adler32(1, dictionary));
     try testing.expectEqual(
         std.hash.Adler32.hash(data),
-        std.mem.readInt(u32, t5_corner_dict_stream[t5_corner_dict_stream.len - 4 ..], .big),
+        readInt(u32, t5_corner_dict_stream[t5_corner_dict_stream.len - 4 ..]),
     );
     // The payload's Adler-32 is the value C zlib writes: 0xd28c50c4.
     try testing.expectEqual(@as(u32, 0xD28C50C4), std.hash.Adler32.hash(data));

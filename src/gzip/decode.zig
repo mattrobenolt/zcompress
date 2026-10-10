@@ -19,6 +19,9 @@ const fastmem = @import("fastmem");
 
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
+const common = @import("common.zig");
+const readInt = common.readInt;
+const writeInt = common.writeInt;
 const flate = @import("../flate/root.zig");
 const crc32 = @import("crc32.zig");
 const encode = @import("encode.zig");
@@ -271,8 +274,8 @@ pub fn checkTrailer(
     crc: u32,
     len: u32,
 ) error{ WrongChecksum, WrongSize }!void {
-    if (mem.readInt(u32, trailer[0..4], .little) != crc) return error.WrongChecksum;
-    if (mem.readInt(u32, trailer[4..8], .little) != len) return error.WrongSize;
+    if (readInt(u32, trailer[0..4]) != crc) return error.WrongChecksum;
+    if (readInt(u32, trailer[4..8]) != len) return error.WrongSize;
 }
 
 /// Decode one complete gzip member from `source` into `target`. `target` is
@@ -380,7 +383,7 @@ test "decode: the extra field is skipped with the XLEN bound" {
     defer testing.allocator.free(header);
     fastmem.copy(u8, header[0..header_len], &empty_header);
     header[3] = flg_fextra;
-    mem.writeInt(u16, header[header_len..][0..2], 0xffff, .little);
+    writeInt(u16, header[header_len..][0..2], 0xffff);
     fastmem.copy(u8, header[header_len + 2 ..], extra);
     const parser = try parseHeader(header);
     try testing.expectEqual(@as(u16, 0xffff), parser.extra_len);
@@ -396,7 +399,7 @@ test "decode: the extra field is skipped with the XLEN bound" {
     var zero: [header_len + 2]u8 = undefined;
     fastmem.copy(u8, zero[0..header_len], &empty_header);
     zero[3] = flg_fextra;
-    mem.writeInt(u16, zero[header_len..][0..2], 0, .little);
+    writeInt(u16, zero[header_len..][0..2], 0);
     const zero_parser = try parseHeader(&zero);
     try testing.expectEqual(@as(u16, 0), zero_parser.extra_len);
 }
@@ -444,7 +447,7 @@ test "decode: FHCRC is verified" {
     fastmem.copy(u8, header[0..header_len], &empty_header);
     header[3] = flg_fhcrc;
     const value: u16 = @truncate(crc32.crc32(0, header[0..header_len]));
-    mem.writeInt(u16, header[header_len..][0..2], value, .little);
+    writeInt(u16, header[header_len..][0..2], value);
     const parser = try parseHeader(&header);
     try testing.expectEqual(value, parser.fhcrc);
 

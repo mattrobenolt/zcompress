@@ -9,13 +9,15 @@
 //! allocation; the member is byte-identical for the same input and options.
 
 const std = @import("std");
-const mem = std.mem;
 const testing = std.testing;
 
 const fastmem = @import("fastmem");
 
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
+const common = @import("common.zig");
+const readInt = common.readInt;
+const writeInt = common.writeInt;
 const flate = @import("../flate/root.zig");
 const crc32 = @import("crc32.zig");
 const decode = @import("decode.zig");
@@ -53,7 +55,7 @@ pub fn writeHeader(target: *[header_len]u8, level: Level) void {
     target[1] = 0x8b; // ID2
     target[2] = 8; // CM: deflate
     target[3] = 0; // FLG: no optional fields, reserved bits clear
-    mem.writeInt(u32, target[4..8], 0, .little); // MTIME
+    writeInt(u32, target[4..8], 0); // MTIME
     target[8] = xflFor(level); // XFL, informational (§2.3.1)
     target[9] = 255; // OS: unknown
 }
@@ -62,8 +64,8 @@ pub fn writeHeader(target: *[header_len]u8, level: Level) void {
 /// then ISIZE, the input length mod 2^32; both u32 little-endian
 /// (`§2.1`, `§2.3.1`).
 pub fn writeTrailer(target: *[trailer_len]u8, crc: u32, len: u32) void {
-    mem.writeInt(u32, target[0..4], crc, .little);
-    mem.writeInt(u32, target[4..8], len, .little);
+    writeInt(u32, target[0..4], crc);
+    writeInt(u32, target[4..8], len);
 }
 
 /// XFL by level (`§2.3.1`: 2 = "maximum compression", 4 = "fastest
@@ -126,7 +128,7 @@ test "encode: the emitted member is the deterministic one" {
     try testing.expectEqual(@as(u8, 0x8b), member[1]);
     try testing.expectEqual(@as(u8, 8), member[2]);
     try testing.expectEqual(@as(u8, 0), member[3]);
-    try testing.expectEqual(@as(u32, 0), mem.readInt(u32, member[4..8], .little));
+    try testing.expectEqual(@as(u32, 0), readInt(u32, member[4..8]));
     try testing.expectEqual(@as(u8, 4), member[8]);
     try testing.expectEqual(@as(u8, 255), member[9]);
 
@@ -134,11 +136,11 @@ test "encode: the emitted member is the deterministic one" {
     // and ISIZE, the input size mod 2^32, both little-endian (§2.1).
     try testing.expectEqual(
         crc32.crc32(0, source),
-        mem.readInt(u32, member[len - 8 ..][0..4], .little),
+        readInt(u32, member[len - 8 ..][0..4]),
     );
     try testing.expectEqual(
         @as(u32, @truncate(source.len)),
-        mem.readInt(u32, member[len - 4 ..][0..4], .little),
+        readInt(u32, member[len - 4 ..][0..4]),
     );
     // The reference kernel agrees (std.hash.crc.Crc32 is the same algorithm).
     try testing.expectEqual(std.hash.crc.Crc32.hash(source), crc32.crc32(0, source));

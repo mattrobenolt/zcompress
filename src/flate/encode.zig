@@ -47,6 +47,8 @@ const fastmem = @import("fastmem");
 
 const internal = @import("../internal/root.zig");
 const sentinel = internal.sentinel;
+const common = @import("common.zig");
+const readInt = common.readInt;
 const decode = @import("decode.zig");
 const golden = @import("golden.zig");
 
@@ -102,12 +104,12 @@ inline fn hash5(u: u64) usize {
 /// 8 bytes of `source` at `pos`, little-endian. The caller keeps the 8-byte
 /// margin.
 inline fn load64(source: []const u8, pos: usize) u64 {
-    return mem.readInt(u64, source[pos..][0..8], .little);
+    return readInt(u64, source[pos..][0..8]);
 }
 
 /// 4 bytes of `source` at `pos`, little-endian — the match confirm.
 inline fn load32(source: []const u8, pos: usize) u32 {
-    return mem.readInt(u32, source[pos..][0..4], .little);
+    return readInt(u32, source[pos..][0..4]);
 }
 
 /// Minimum match length the finder emits: 3-byte matches cost a length symbol
