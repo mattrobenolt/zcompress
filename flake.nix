@@ -47,6 +47,14 @@
               opentofu
               go
               cmake
+              # The conformance lanes' reference CLIs (zstd-notes.md's verified
+              # incantations, the gzip oracle's streaming rows): the flake pins
+              # the oracles, not the box. zlib-the-library needs no system dep —
+              # the Python oracles ride CPython's bundled zlib, and the
+              # competitor arms are sha-pinned tarballs the harness builds
+              # itself with zig cc.
+              zstd
+              gzip
             ];
             env = {
               UV_PYTHON = "${pkgs.python314}/bin/python3";
