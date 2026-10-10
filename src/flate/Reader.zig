@@ -487,20 +487,10 @@ fn rebase(r: *Reader, capacity: usize) Io.Reader.RebaseError!void {
 // must be untouched.
 // ---------------------------------------------------------------------------
 
-/// Pump `r` into `w` until the clean end of stream.
-fn pump(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamError!void {
-    while (true) {
-        _ = r.stream(w, .unlimited) catch |err| return switch (err) {
-            error.EndOfStream => {},
-            else => |e| e,
-        };
-    }
-}
-
 /// Decode `r` into `target` through a fixed writer, returning the length.
 fn decodeInto(r: *Io.Reader, target: []u8) !usize {
     var w: Io.Writer = .fixed(target);
-    try pump(r, &w);
+    _ = try r.streamRemaining(&w);
     return w.end;
 }
 
@@ -693,7 +683,7 @@ test "Reader: golden golang/go vectors through the streaming reader" {
                 var r: Reader = .init(&fixed_in, &rbuf);
                 var out: Io.Writer.Allocating = .init(gpa);
                 defer out.deinit();
-                try testing.expectError(error.ReadFailed, pump(&r.reader, &out.writer));
+                try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&out.writer));
                 switch (tc.expect) {
                     .fail_with => |want_err| {
                         if (r.err.? != want_err) {
@@ -726,7 +716,7 @@ test "Reader: truncated streams fail closed and stay failed" {
         var r: Reader = .init(&fixed_in, &rbuf);
         var out: Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
-        try testing.expectError(error.ReadFailed, pump(&r.reader, &out.writer));
+        try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&out.writer));
         try testing.expectEqual(Error.Truncated, r.err.?);
         var sink: Io.Writer.Discarding = .init(&.{});
         try testing.expectError(error.ReadFailed, r.reader.stream(&sink.writer, .unlimited));
@@ -741,7 +731,7 @@ test "Reader: truncated streams fail closed and stay failed" {
         var r: Reader = .init(&fixed_in, &rbuf);
         var out: Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
-        try testing.expectError(error.ReadFailed, pump(&r.reader, &out.writer));
+        try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&out.writer));
         try testing.expectEqual(Error.Truncated, r.err.?);
     }
 }
@@ -757,7 +747,7 @@ test "Reader: golang/go huffman-* fixtures decode through the stream" {
         var r: Reader = .init(&fixed_in, &rbuf);
         var out: Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
-        try testing.expectError(error.ReadFailed, pump(&r.reader, &out.writer));
+        try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&out.writer));
         try testing.expectEqual(Error.Truncated, r.err.?);
 
         const completed = try gpa.alloc(u8, fixture.golden.len);
@@ -1097,7 +1087,7 @@ test "Reader: a corrupt stream fails closed and stays failed" {
         var r: Reader = .init(&fixed_in, &rbuf);
         var out: Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
-        try testing.expectError(error.ReadFailed, pump(&r.reader, &out.writer));
+        try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&out.writer));
         try testing.expectEqual(tc.want, r.err.?);
         var sink: Io.Writer.Discarding = .init(&.{});
         try testing.expectError(error.ReadFailed, r.reader.stream(&sink.writer, .unlimited));

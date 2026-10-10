@@ -185,12 +185,12 @@ test "Reader: golden golang/snappy vectors through the framed stream" {
         defer plain.deinit();
 
         if (tc.want_err) {
-            try testing.expectError(error.ReadFailed, pump(&r.reader, &plain.writer));
+            try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&plain.writer));
             var sink: Io.Writer.Discarding = .init(&.{});
             try testing.expectError(error.ReadFailed, r.reader.stream(&sink.writer, .unlimited));
             continue;
         }
-        pump(&r.reader, &plain.writer) catch |err| {
+        _ = r.reader.streamRemaining(&plain.writer) catch |err| {
             std.debug.print("\nFAIL: {s}\n", .{tc.desc});
             return err;
         };
@@ -231,7 +231,7 @@ test "Reader: a zero-length stream poll does not fail the stream" {
     try testing.expect(r.err == null);
     var plain: Io.Writer.Allocating = .init(gpa);
     defer plain.deinit();
-    try pump(&r.reader, &plain.writer);
+    _ = try r.reader.streamRemaining(&plain.writer);
     try testing.expectEqualSlices(u8, src, plain.written());
 }
 
@@ -384,7 +384,7 @@ test "Reader: corrupt framing fails closed and stays failed" {
         var r: Reader = .init(&fixed_in, &rbuf);
         var out: Io.Writer.Allocating = .init(testing.allocator);
         defer out.deinit();
-        try testing.expectError(error.ReadFailed, pump(&r.reader, &out.writer));
+        try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&out.writer));
         // The failure is sticky.
         var sink: Io.Writer.Discarding = .init(&.{});
         try testing.expectError(error.ReadFailed, r.reader.stream(&sink.writer, .unlimited));
@@ -428,18 +428,8 @@ test "Reader: a framed block decoding past one block fails closed" {
     var r: Reader = .init(&fixed_in, &rbuf);
     var plain: Io.Writer.Allocating = .init(gpa);
     defer plain.deinit();
-    try testing.expectError(error.ReadFailed, pump(&r.reader, &plain.writer));
+    try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&plain.writer));
     try testing.expectEqual(Error.InvalidStream, r.err.?);
-}
-
-/// Pump `r` into `w` until the clean end of stream.
-fn pump(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamError!void {
-    while (true) {
-        _ = r.stream(w, .unlimited) catch |err| return switch (err) {
-            error.EndOfStream => {},
-            else => |e| e,
-        };
-    }
 }
 
 /// Encode `src` with `Writer`, decode with `Reader`, expect identity.
@@ -456,7 +446,7 @@ fn roundTrip(src: []const u8) !void {
     var r: Reader = .init(&fixed_in, &rbuf);
     var plain: Io.Writer.Allocating = .init(testing.allocator);
     defer plain.deinit();
-    try pump(&r.reader, &plain.writer);
+    _ = try r.reader.streamRemaining(&plain.writer);
     try testing.expectEqual(src.len, plain.written().len);
     try testing.expectEqualSlices(u8, src, plain.written());
 }

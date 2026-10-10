@@ -211,20 +211,10 @@ pub fn streamAll(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamRemainingError!us
 // §2.3.1.2 (decoder obligations). Every decode is sentinel-checked.
 // ---------------------------------------------------------------------------
 
-/// Pump `r` into `w` until the clean end of stream.
-fn pumpInto(r: *Io.Reader, w: *Io.Writer) Io.Reader.StreamError!void {
-    while (true) {
-        _ = r.stream(w, .unlimited) catch |err| return switch (err) {
-            error.EndOfStream => {},
-            else => |e| e,
-        };
-    }
-}
-
 /// Decode `r` into `target` through a fixed writer, returning the length.
 fn decodeInto(r: *Io.Reader, target: []u8) !usize {
     var w: Io.Writer = .fixed(target);
-    try pumpInto(r, &w);
+    _ = try r.streamRemaining(&w);
     return w.end;
 }
 
@@ -371,7 +361,7 @@ test "Reader: the golden table decodes through the streaming layer" {
 /// detail (when the case pins one) sticky in `err`.
 fn expectStreamFailure(r: *Reader, want: ?decode.DecompressError) !void {
     var sink: Io.Writer.Discarding = .init(&.{});
-    try testing.expectError(error.ReadFailed, pumpInto(&r.reader, &sink.writer));
+    try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&sink.writer));
     if (want) |detail| try testing.expectEqual(detail, r.err.?);
 }
 
@@ -440,7 +430,7 @@ test "Reader: garbage in a member's place fails closed" {
     var fixed_in: Io.Reader = .fixed(garbage);
     var r: Reader = .init(&fixed_in, &rbuf);
     var sink: Io.Writer.Discarding = .init(&.{});
-    try testing.expectError(error.ReadFailed, pumpInto(&r.reader, &sink.writer));
+    try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&sink.writer));
     try testing.expectEqual(Error.BadHeader, r.err.?);
     // The failure is sticky.
     try testing.expectError(error.ReadFailed, r.reader.stream(&sink.writer, .unlimited));
@@ -465,7 +455,7 @@ test "Reader: a corrupt trailer fails at the clean end, stickily" {
         var r: Reader = .init(&fixed_in, &rbuf);
         var out: Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
-        try testing.expectError(error.ReadFailed, pumpInto(&r.reader, &out.writer));
+        try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&out.writer));
         const want: Error = if (at < 4) error.WrongChecksum else error.WrongSize;
         try testing.expectEqual(want, r.err.?);
         // The decoded bytes are still served (the check is at the end), but
@@ -487,7 +477,7 @@ test "Reader: a truncated member is Truncated at every prefix" {
         var r: Reader = .init(&fixed_in, &rbuf);
         var out: Io.Writer.Allocating = .init(gpa);
         defer out.deinit();
-        try testing.expectError(error.ReadFailed, pumpInto(&r.reader, &out.writer));
+        try testing.expectError(error.ReadFailed, r.reader.streamRemaining(&out.writer));
         try testing.expectEqual(Error.Truncated, r.err.?);
     }
 }
