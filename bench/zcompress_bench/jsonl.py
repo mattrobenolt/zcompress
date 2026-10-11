@@ -16,8 +16,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 SCHEMA = 1
-ARMS = ("zc", "klauspost", "libdeflate", "zlibng", "googlesnappy")
-CODECS = ("flate", "gzip", "zlib", "snappy")
+ARMS = ("zc", "klauspost", "libdeflate", "zlibng", "googlesnappy", "zstd-c")
+CODECS = ("flate", "gzip", "zlib", "snappy", "zstd")
 DIRECTIONS = ("compress", "decompress")
 SHAPES = ("text", "random", "html", "rle", "mixed")
 SIZES = (32768, 65536)
@@ -70,7 +70,7 @@ class Meta(Record):
 class Sample(Record):
     type: Literal["sample"]
     case: str
-    codec: Literal["flate", "gzip", "zlib", "snappy"]
+    codec: Literal["flate", "gzip", "zlib", "snappy", "zstd"]
     direction: Literal["compress", "decompress"]
     shape: Literal["text", "random", "html", "rle", "mixed"]
     size: int

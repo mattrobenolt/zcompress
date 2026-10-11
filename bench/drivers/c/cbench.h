@@ -24,7 +24,9 @@
 
 /* The driver's codec set and the compiler line in the meta record. The
  * flate-family default covers the C arms; the google/snappy driver
- * overrides both before including this header. */
+ * overrides both before including this header. A decode-only driver (the
+ * zstd-c arm) overrides CBENCH_DIRECTIONS; its impl_compress is then never
+ * called. */
 #ifndef CBENCH_CODECS
 #define CBENCH_CODECS {"flate", "gzip", "zlib"}
 #define CBENCH_CODEC_COUNT 3
@@ -32,11 +34,16 @@
 #ifndef CBENCH_TOOLCHAIN
 #define CBENCH_TOOLCHAIN "zig cc"
 #endif
+#ifndef CBENCH_DIRECTIONS
+#define CBENCH_DIRECTIONS {"compress", "decompress"}
+#define CBENCH_DIRECTION_COUNT 2
+#endif
 
 static const char *const shapes[] = {"text", "random", "html", "rle", "mixed"};
 static const size_t shape_sizes[] = {32 * 1024, 64 * 1024};
 static const char *const codecs[] = CBENCH_CODECS;
-static const char *const directions[] = {"compress", "decompress"};
+static const char *const directions[] = CBENCH_DIRECTIONS;
+static const int direction_count = CBENCH_DIRECTION_COUNT;
 
 struct cbench_options {
     const char *corpus;
@@ -60,7 +67,16 @@ static const char *blob_ext(const char *codec)
 {
     if (!strcmp(codec, "gzip")) return "gz";
     if (!strcmp(codec, "zlib")) return "zz";
+    if (!strcmp(codec, "zstd")) return "zst";
     return codec;
+}
+
+/* True when the driver carries this direction (CBENCH_DIRECTIONS). */
+static int has_direction(const char *direction)
+{
+    for (int d = 0; d < direction_count; d++)
+        if (!strcmp(directions[d], direction)) return 1;
+    return 0;
 }
 
 static unsigned char *read_file(const char *dir, const char *name, size_t *len)
@@ -229,10 +245,10 @@ static int row_selected(struct cbench_options *o, const char *codec,
     return strstr(id, o->filter) != NULL;
 }
 
-/* True when any row of this codec (either direction) is selected. */
+/* True when any row of this codec (any direction it carries) is selected. */
 static int any_row(struct cbench_options *o, const char *codec, const char *shape, size_t size)
 {
-    for (int d = 0; d < 2; d++)
+    for (int d = 0; d < direction_count; d++)
         if (row_selected(o, codec, directions[d], shape, size)) return 1;
     return 0;
 }
@@ -240,12 +256,16 @@ static int any_row(struct cbench_options *o, const char *codec, const char *shap
 static int check_cell(struct cbench_case *c, int k, unsigned char *target,
                       unsigned char *decoded, const char **detail)
 {
-    size_t n = impl_compress(codecs[k], c->raw, c->size, target, CBENCH_TARGET_CAP);
-    if (n == 0) { *detail = "compress failed"; return -1; }
-    size_t back = impl_decompress(codecs[k], target, n, decoded, c->size);
-    if (back != c->size || memcmp(decoded, c->raw, c->size)) {
-        *detail = "round trip mismatch";
-        return -1;
+    /* Decode-only drivers have no round trip: the reference decode is the
+     * whole check. */
+    if (has_direction("compress")) {
+        size_t n = impl_compress(codecs[k], c->raw, c->size, target, CBENCH_TARGET_CAP);
+        if (n == 0) { *detail = "compress failed"; return -1; }
+        size_t back = impl_decompress(codecs[k], target, n, decoded, c->size);
+        if (back != c->size || memcmp(decoded, c->raw, c->size)) {
+            *detail = "round trip mismatch";
+            return -1;
+        }
     }
     size_t got = impl_decompress(codecs[k], c->blobs[k], c->blob_lens[k], decoded, c->size);
     if (got != c->size || memcmp(decoded, c->raw, c->size)) {
@@ -368,7 +388,7 @@ static void run_measure(struct cbench_options *o)
             cases += counted;
             for (int sample = 0; sample < o->samples; sample++)
                 for (int k = 0; k < CBENCH_CODEC_COUNT; k++)
-                    for (int d = 0; d < 2; d++)
+                    for (int d = 0; d < direction_count; d++)
                         if (row_selected(o, codecs[k], directions[d], c.shape, c.size))
                             measure(o, &c, k, directions[d], sample, target);
             for (int k = 0; k < CBENCH_CODEC_COUNT; k++) free(c.blobs[k]);

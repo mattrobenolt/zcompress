@@ -771,9 +771,13 @@ claims — a claim names a fleet run directory and a results file under
 `docs/results/`.
 
 M4 is decode-only, so the corpus's `.zst` blobs come from the **pinned zstd
-CLI** (v1.5.7) at a recorded level rather than from our encoder, hashed and
-committed like every other reference blob; the M4 corpus gains a shape past
-the default serving region so the window slide is measured, not assumed.
+CLI** (v1.5.7, the flake) at the recorded level 1 — the fast class every
+other arm's rows measure — rather than from our encoder, each frame
+verified byte-exact by our decoder (`bench/zig/corpus.zig --zstd`), hashed
+and committed like every other reference blob. The corpus keeps the
+family's sizes (32 KiB / 64 KiB): the one-shot needs no window (the target
+is the history), so the window slide is the streaming layer's concern, not
+the fleet corpus's.
 Rows:
 
 - `BenchmarkZstdDecompress` — the one-shot decode per shape and size.

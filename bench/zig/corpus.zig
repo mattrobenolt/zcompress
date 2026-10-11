@@ -9,8 +9,17 @@
 //! zcompress one-shots. Decompression rows on the fleet decode these exact
 //! blobs, so every implementation's decoder sees identical input bytes.
 //!
-//! Run from the repo root: `zig build corpus -- [DIR]` (default bench/corpus).
-//! Rewrites only files whose bytes differ and prints the SHA256SUMS.
+//! The `.zst` blobs invert the family's pattern (M4 has no zstd encoder):
+//! the pinned zstd CLI (v1.5.7, the flake) at `zstd_cli_level` produces the
+//! frames — level 1 matches the harness-wide fast class — and this
+//! generator verifies each one byte-exact with our decoder
+//! (`zstd.zstd.decode.decompress`) before writing it. Pass `--zstd` to
+//! (re)generate them; a plain run re-hashes the committed `.zst` files into
+//! the manifest, so both modes reproduce the tree exactly.
+//!
+//! Run from the repo root: `zig build corpus -- [--zstd] [DIR]` (default
+//! bench/corpus). Rewrites only files whose bytes differ and prints the
+//! SHA256SUMS.
 
 const std = @import("std");
 const Io = std.Io;
@@ -32,6 +41,12 @@ pub const Shape = enum {
 };
 
 pub const sizes = [_]usize{ 32 * 1024, 64 * 1024 };
+
+/// The recorded zstd CLI level of the corpus's `.zst` reference blobs
+/// (src/zstd/README.md, "Benchmarks"). The CLI's own default is 3; level 1
+/// is the fast class every other arm's rows measure (zc `.fast`,
+/// klauspost/libdeflate/zlib-ng level 1).
+const zstd_cli_level = "-1";
 
 /// One definition of the corpus shapes: the fleet drivers read the files
 /// this generates; nothing regenerates shapes on the boxes.
@@ -64,10 +79,18 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const arena = init.arena.allocator();
     const args = try init.minimal.args.toSlice(arena);
-    const dir_path = if (args.len > 1) args[1] else "bench/corpus";
+    var dir_path: []const u8 = "bench/corpus";
+    var gen_zstd = false;
+    for (args[1..]) |arg| {
+        if (mem.eql(u8, arg, "--zstd")) {
+            gen_zstd = true;
+        } else {
+            dir_path = arg;
+        }
+    }
 
     try Io.Dir.cwd().createDirPath(io, dir_path);
-    var dir = try Io.Dir.cwd().openDir(io, dir_path, .{});
+    var dir = try Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true });
     defer dir.close(io);
 
     var sums: std.ArrayList(u8) = .empty;
@@ -85,7 +108,28 @@ pub fn main(init: std.process.Init) !void {
             try writeBlob(io, arena, dir, &sums, base_name, "gz", target, zcompress.gzip.encode.compress(raw, target, .{}));
             try writeBlob(io, arena, dir, &sums, base_name, "zz", target, zcompress.zlib.encode.compress(raw, target, .{}));
             try writeBlob(io, arena, dir, &sums, base_name, "snappy", target, zcompress.snappy.encode.compressBlock(raw, target));
+            if (gen_zstd) try writeZstdBlob(io, arena, dir, dir_path, base_name, raw);
         }
+    }
+
+    // The .zst reference blobs, committed after a `--zstd` run: every mode
+    // re-hashes them into the manifest (sorted, after the generated rows),
+    // so a plain regeneration reproduces the committed SHA256SUMS exactly.
+    var names: std.ArrayList([]const u8) = .empty;
+    var iterator = dir.iterate();
+    while (try iterator.next(io)) |entry| {
+        if (entry.kind == .file and mem.endsWith(u8, entry.name, ".zst")) {
+            try names.append(arena, try arena.dupe(u8, entry.name));
+        }
+    }
+    mem.sort([]const u8, names.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+    for (names.items) |name| {
+        const blob = try dir.readFileAlloc(io, name, arena, .unlimited);
+        try writeFile(io, arena, dir, &sums, name, blob);
     }
 
     try dir.writeFile(io, .{ .sub_path = "SHA256SUMS", .data = sums.items });
@@ -111,6 +155,46 @@ fn writeBlob(
     };
     const blob_name = try std.fmt.allocPrint(arena, "{s}.{s}", .{ base_name, ext });
     try writeFile(io, arena, dir, sums, blob_name, target[0..n]);
+}
+
+/// Compress `raw` with the pinned zstd CLI at `zstd_cli_level` and write
+/// the frame as `<base_name>.zst` — but only after OUR decoder reproduces
+/// the raw bytes exactly (the inverse verification of the family's pattern:
+/// the reference tool encodes, our decoder is the gate). The manifest entry
+/// is added by the sorted `.zst` pass in main, keeping plain and `--zstd`
+/// runs byte-identical.
+fn writeZstdBlob(
+    io: Io,
+    arena: Allocator,
+    dir: Io.Dir,
+    dir_path: []const u8,
+    base_name: []const u8,
+    raw: []const u8,
+) !void {
+    const path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, base_name });
+    const result = try std.process.run(arena, io, .{
+        .argv = &.{ "zstd", "-q", "--no-progress", zstd_cli_level, "-c", "--", path },
+    });
+    switch (result.term) {
+        .exited => |code| if (code != 0) {
+            std.debug.print("corpus: zstd CLI failed on {s}: {s}\n", .{ base_name, result.stderr });
+            return error.ZstdCliFailed;
+        },
+        else => return error.ZstdCliFailed,
+    }
+    const back = try arena.alloc(u8, raw.len);
+    const n = zcompress.zstd.decode.decompress(result.stdout, back) catch |err| {
+        std.debug.print("corpus: our zstd decoder rejected the CLI frame for {s}: {s}\n", .{
+            base_name, @errorName(err),
+        });
+        return err;
+    };
+    if (n != raw.len or !mem.eql(u8, back, raw)) return error.ZstdBlobMismatch;
+    const name = try std.fmt.allocPrint(arena, "{s}.zst", .{base_name});
+    const current: ?[]u8 = dir.readFileAlloc(io, name, arena, .unlimited) catch null;
+    if (current == null or !mem.eql(u8, current.?, result.stdout)) {
+        try dir.writeFile(io, .{ .sub_path = name, .data = result.stdout });
+    }
 }
 
 fn maxCompressedLength(input_len: usize) usize {

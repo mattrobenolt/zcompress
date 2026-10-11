@@ -23,6 +23,7 @@ via systemd; `ec2bench/isolation.py`):
 | `libdeflate` | bench/drivers/c/bench_libdeflate.c | libdeflate v1.26 gzip/zlib/deflate one-shots, level 1 | `zig cc -static` per target/CPU over the zon-pinned source tree |
 | `zlibng` | bench/drivers/c/bench_zlibng.c | zlib-ng 2.3.3 streaming (zlib-compat API, windowBits -15/15/31), level 1 | cmake (ZLIB_COMPAT, static) with a zig-cc wrapper, per target/CPU |
 | `googlesnappy` | bench/drivers/google-snappy/bench_snappy.cc | google/snappy 1.3.1 raw blocks (`snappy::RawCompress`/`RawUncompress`), both directions | cmake (static `snappy`) with zig-cc/zig-c++ wrappers, per target/CPU over the zon-pinned source tree |
+| `zstd-c` | bench/drivers/c/bench_zstd.c | zstd v1.5.7 (the notes' pinned tag, docs/research/zstd-notes.md §6.1) whole-buffer `ZSTD_decompressDCtx`, decode-only | cmake (`build/cmake`, static lib, no programs/tests/threads) with a zig-cc wrapper, per target/CPU over the zon-pinned source tree |
 | `aa` | the `zc` binary again | the A/A noise floor | — |
 
 The three C arms' sources are pinned in `bench/build.zig.zon` (release-tarball
@@ -39,8 +40,12 @@ and the build runner fetches every marked dependency on any invocation.
 Snappy competitor coverage: klauspost plus google/snappy C++ (the plan's
 pinned canonical implementation, `docs/zcompress-plan.md`, "Benchmark
 methodology"), both over raw blocks. The M3 run carried klauspost only —
-the results file records that gap — and the google/snappy rows ride the M4
-fleet run.
+its results file records that gap; the google/snappy arm landed for the M4
+run, which closes it.
+
+zstd is decode-only in M4 (the encoder is M5): the zstd rows are
+`zstd/decompress/...` on every arm that carries the codec — zc (plus the
+in-binary std.compress.zstd rows), klauspost (`DecodeAll`), and zstd-c.
 
 ## Corpus
 
@@ -50,7 +55,13 @@ html, rle, mixed at 32 KiB and 64 KiB. The generator is
 bench/zig/corpus.zig (`zig build corpus`); it is deterministic and rewrites
 only changed bytes. Next to each raw file sit the **reference blobs**
 (`.flate`, `.gz`, `.zz`, `.snappy`), produced by the zcompress encoders:
-every arm's decompression rows decode these identical bytes. Each driver's
+every arm's decompression rows decode these identical bytes.
+
+The `.zst` blobs invert the pattern (M4 has no zstd encoder): the pinned
+zstd CLI (v1.5.7, the flake) at level 1 — the fast class every arm's rows
+measure — produces the frames (XXH64 checksums on), and the generator
+verifies each one byte-exact with our decoder before writing it
+(`zig build corpus -- --zstd`). Each driver's
 meta record carries the SHA-256 of every raw file it read; the parser
 rejects a round whose hashes disagree with the committed corpus.
 

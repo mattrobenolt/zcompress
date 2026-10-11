@@ -8,10 +8,12 @@
 //!
 //! Implementations in this binary:
 //!   - `zc`  — the zcompress one-shots: flate/gzip/zlib at level .fast and
-//!     the snappy raw block codec, both directions.
+//!     the snappy raw block codec, both directions, plus the zstd one-shot
+//!     decode (M4 is decode-only: no zstd compress row).
 //!   - `std` — std.compress.flate with Container raw/gzip/zlib at level_1
-//!     (the fast class), both directions. The in-binary competitor: its rows
-//!     pair with the `zc` rows inside the same process.
+//!     (the fast class), both directions, plus std.compress.zstd decode.
+//!     The in-binary competitor: its rows pair with the `zc` rows inside
+//!     the same process.
 //!
 //! Decompression rows decode the reference blobs produced by the corpus
 //! generator (the zcompress encoders), so every arm's decoder sees the same
@@ -27,6 +29,7 @@ const Io = std.Io;
 const mem = std.mem;
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
+const assert = std.debug.assert;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 const fastmem = @import("fastmem");
@@ -34,11 +37,13 @@ const fastmem = @import("fastmem");
 const zcompress = @import("zcompress");
 const build_options = @import("build_options");
 const std_flate = std.compress.flate;
+const std_zstd = std.compress.zstd;
 
 const shapes = [_][]const u8{ "text", "random", "html", "rle", "mixed" };
 const sizes = [_]usize{ 32 * 1024, 64 * 1024 };
-const codecs = [_][]const u8{ "flate", "gzip", "zlib", "snappy" };
+const codecs = [_][]const u8{ "flate", "gzip", "zlib", "snappy", "zstd" };
 const directions = [_][]const u8{ "compress", "decompress" };
+const decode_only = [_][]const u8{"decompress"};
 
 const Suite = enum { standard, quick };
 
@@ -46,7 +51,16 @@ const Suite = enum { standard, quick };
 fn blobExt(codec: []const u8) []const u8 {
     if (mem.eql(u8, codec, "gzip")) return "gz";
     if (mem.eql(u8, codec, "zlib")) return "zz";
+    if (mem.eql(u8, codec, "zstd")) return "zst";
     return codec;
+}
+
+/// zstd is decode-only until M5 (there is no zcompress zstd encoder, and
+/// std.compress.zstd has no compressor either): its rows are decompress
+/// only, decoding the pinned CLI's reference frames (bench/zig/corpus.zig).
+fn codecDirections(codec: []const u8) []const []const u8 {
+    if (mem.eql(u8, codec, "zstd")) return &decode_only;
+    return &directions;
 }
 
 const Options = struct {
@@ -142,6 +156,9 @@ const Bench = struct {
     decoded: []u8,
     /// The std competitor's history window (std_flate.Compress/Decompress).
     window: []u8,
+    /// The std zstd decoder's window buffer: std_zstd.Decompress asserts it
+    /// holds window_len + block_size_max (the 8 MiB default + 128 KiB).
+    zstd_window: []u8,
     cases: u32 = 0,
 
     fn now(bench: Bench) i96 {
@@ -155,12 +172,12 @@ const Bench = struct {
         return mem.containsAtLeast(u8, case.id(codec, direction, &buf), 1, filter);
     }
 
-    /// True when any row of this codec (any selected impl, either direction)
-    /// is selected.
+    /// True when any row of this codec (any selected impl, any direction
+    /// the codec carries) is selected.
     fn anyRow(bench: Bench, case: Case, codec: []const u8) bool {
         for (bench.options.impls.list()) |impl| {
             if (mem.eql(u8, impl, "std") and mem.eql(u8, codec, "snappy")) continue;
-            for (directions) |direction| {
+            for (codecDirections(codec)) |direction| {
                 if (bench.selected(case, codec, direction)) return true;
             }
         }
@@ -194,6 +211,7 @@ pub fn main(init: std.process.Init) !void {
         .compressed = try arena.alloc(u8, maxTargetLen()),
         .decoded = try arena.alloc(u8, 64 * 1024),
         .window = try arena.alloc(u8, std_flate.max_window_len),
+        .zstd_window = try arena.alloc(u8, std_zstd.default_window_len + std_zstd.block_size_max),
     };
     if (options.check) {
         try checkAll(&bench);
@@ -235,6 +253,9 @@ fn loadCase(bench: *Bench, shape: []const u8, size: usize) !Case {
 // ---------------------------------------------------------------------------
 
 fn compressOne(bench: *Bench, impl: []const u8, codec: []const u8, raw: []const u8) !usize {
+    // The compress direction is never selected for a decode-only codec
+    // (codecDirections gates every loop above), so a zstd call is a bug.
+    assert(!mem.eql(u8, codec, "zstd"));
     const target = bench.compressed;
     if (mem.eql(u8, impl, "zc")) {
         if (mem.eql(u8, codec, "flate"))
@@ -276,6 +297,8 @@ fn decompressOne(bench: *Bench, impl: []const u8, codec: []const u8, blob: []con
             return zcompress.gzip.decode.decompress(blob, target);
         if (mem.eql(u8, codec, "zlib"))
             return zcompress.zlib.decode.decompress(blob, target);
+        if (mem.eql(u8, codec, "zstd"))
+            return zcompress.zstd.decode.decompress(blob, target);
         return zcompress.snappy.decode.decompressBlock(blob, target);
     }
     return stdDecompress(bench, codec, blob);
@@ -283,6 +306,15 @@ fn decompressOne(bench: *Bench, impl: []const u8, codec: []const u8, blob: []con
 
 fn stdDecompress(bench: *Bench, codec: []const u8, blob: []const u8) !usize {
     var in: Io.Reader = .fixed(blob);
+    if (mem.eql(u8, codec, "zstd")) {
+        // Indirect vtable: the window buffer carries the history (std
+        // asserts it holds window_len + block_size_max). The codec set
+        // guarantees only this call takes the zstd path with that buffer.
+        var decompress = std_zstd.Decompress.init(&in, bench.zstd_window, .{});
+        var out: Io.Writer = .fixed(bench.decoded);
+        _ = try decompress.reader.streamRemaining(&out);
+        return out.buffered().len;
+    }
     var decompress = std_flate.Decompress.init(&in, stdContainer(codec), bench.window);
     var out: Io.Writer = .fixed(bench.decoded);
     _ = try decompress.reader.streamRemaining(&out);
@@ -297,14 +329,18 @@ fn checkCase(bench: *Bench, case: Case) !?[]const u8 {
             if (mem.eql(u8, impl, "std") and mem.eql(u8, codec, "snappy")) continue;
             if (!bench.anyRow(case, codec)) continue;
             bench.cases += 1;
-            const n = compressOne(bench, impl, codec, case.raw) catch |err| {
-                return @errorName(err);
-            };
-            const back = decompressOne(bench, impl, codec, bench.compressed[0..n]) catch |err| {
-                return @errorName(err);
-            };
-            if (back != case.size or !mem.eql(u8, bench.decoded[0..back], case.raw)) {
-                return "round trip mismatch";
+            // Decode-only codecs (zstd until M5) have no round trip: the
+            // reference-blob decode below is the whole check.
+            if (codecDirections(codec).len == 2) {
+                const n = compressOne(bench, impl, codec, case.raw) catch |err| {
+                    return @errorName(err);
+                };
+                const back = decompressOne(bench, impl, codec, bench.compressed[0..n]) catch |err| {
+                    return @errorName(err);
+                };
+                if (back != case.size or !mem.eql(u8, bench.decoded[0..back], case.raw)) {
+                    return "round trip mismatch";
+                }
             }
             const decoded = decompressOne(bench, impl, codec, case.blobs[k]) catch |err| {
                 return @errorName(err);
@@ -366,10 +402,12 @@ fn measure(bench: *Bench) !void {
                 for (codecs, 0..) |codec, k| {
                     if (mem.eql(u8, impl, "std") and mem.eql(u8, codec, "snappy")) continue;
                     if (!bench.anyRow(case, codec)) continue;
-                    const n = try compressOne(bench, impl, codec, case.raw);
-                    const back = try decompressOne(bench, impl, codec, bench.compressed[0..n]);
-                    if (back != case.size or !mem.eql(u8, bench.decoded[0..back], case.raw))
-                        return error.RoundTripMismatch;
+                    if (codecDirections(codec).len == 2) {
+                        const n = try compressOne(bench, impl, codec, case.raw);
+                        const back = try decompressOne(bench, impl, codec, bench.compressed[0..n]);
+                        if (back != case.size or !mem.eql(u8, bench.decoded[0..back], case.raw))
+                            return error.RoundTripMismatch;
+                    }
                     const decoded = try decompressOne(bench, impl, codec, case.blobs[k]);
                     if (decoded != case.size or !mem.eql(u8, bench.decoded[0..decoded], case.raw))
                         return error.ReferenceBlobMismatch;
@@ -381,7 +419,7 @@ fn measure(bench: *Bench) !void {
                 for (bench.options.impls.list()) |impl| {
                     for (codecs, 0..) |codec, k| {
                         if (mem.eql(u8, impl, "std") and mem.eql(u8, codec, "snappy")) continue;
-                        for (directions) |direction| {
+                        for (codecDirections(codec)) |direction| {
                             if (!bench.selected(case, codec, direction)) continue;
                             try sample(bench, case, codec, k, impl, direction, @intCast(sample_index));
                         }

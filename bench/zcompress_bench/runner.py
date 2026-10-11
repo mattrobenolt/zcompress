@@ -2,7 +2,7 @@
 
 Ported from fastmem_bench/runner.py: variants become arms (one per
 implementation binary: zc, klauspost, libdeflate, zlibng, googlesnappy,
-plus the aa duplicate of the zc binary for the noise floor). A run
+zstd-c, plus the aa duplicate of the zc binary for the noise floor). A run
 cross-builds every arm for every target, interleaves per-round process runs
 through the seeded balanced Latin square under CPU isolation, and analyzes
 round medians with exact rank intervals.
@@ -30,6 +30,7 @@ ARM_TOOLS = {
     "libdeflate": "libdeflate",
     "zlibng": "zlib-ng",
     "googlesnappy": "google/snappy",
+    "zstd-c": "zstd",
 }
 
 
@@ -246,6 +247,7 @@ def analyze_run(run_dir: Path, minimum_effect: float | None) -> None:
         "libdeflate": manifest["competitors"]["libdeflate"]["version"],
         "zlibng": manifest["competitors"]["zlib-ng"]["version"],
         "googlesnappy": manifest["competitors"].get("google-snappy", {}).get("version", "unknown"),
+        "zstd-c": manifest["competitors"].get("zstd", {}).get("version", "unknown"),
     }
     arms = {arm: {"tool": ARM_TOOLS[arm], "revision": revisions[arm]} for arm in manifest["arms"]}
     write(

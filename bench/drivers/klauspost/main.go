@@ -1,7 +1,9 @@
 // The klauspost/compress fleet arm (bench/README.md). Same CLI, corpus, and
 // schema-v1 JSONL as the zcompress driver: one process is one round of this
 // arm. Rows: flate/gzip/zlib at level 1 (the fast class, matching the
-// zcompress .fast rows) and snappy raw blocks, both directions.
+// zcompress .fast rows) and snappy raw blocks, both directions, plus zstd
+// DecodeAll — decode-only (M4 is the zstd decode milestone; zc has no zstd
+// encoder), the single-buffer arm the zc one-shot decode races.
 //
 // One-shot shape: writers and readers are constructed per iteration, the Go
 // equivalent of the zcompress one-shots' per-call table setup. Decompression
@@ -26,12 +28,22 @@ import (
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/snappy"
 	"github.com/klauspost/compress/zlib"
+	"github.com/klauspost/compress/zstd"
 )
 
 var shapes = []string{"text", "random", "html", "rle", "mixed"}
 var sizes = []int{32 * 1024, 64 * 1024}
-var codecs = []string{"flate", "gzip", "zlib", "snappy"}
+var codecs = []string{"flate", "gzip", "zlib", "snappy", "zstd"}
 var directions = []string{"compress", "decompress"}
+
+// directionsFor: zstd is decode-only this milestone (no zc encoder, so no
+// compress row to compare against).
+func directionsFor(codec string) []string {
+	if codec == "zstd" {
+		return []string{"decompress"}
+	}
+	return directions
+}
 
 type options struct {
 	corpus   string
@@ -56,6 +68,8 @@ func blobExt(codec string) string {
 		return "gz"
 	case "zlib":
 		return "zz"
+	case "zstd":
+		return "zst"
 	default:
 		return codec
 	}
@@ -81,9 +95,29 @@ func loadCase(o *options, shape string, size int) (*kase, error) {
 	return c, nil
 }
 
+// The zstd decoder, built once: DecodeAll on a shared *Decoder (concurrency
+// 1 — the fleet pins one core) is the single-buffer shape the zc one-shot
+// races; NewReader(nil) makes a decoder with no stream attached.
+var zstdDec *zstd.Decoder
+
+func zstdDecoder() (*zstd.Decoder, error) {
+	if zstdDec == nil {
+		dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+		if err != nil {
+			return nil, err
+		}
+		zstdDec = dec
+	}
+	return zstdDec, nil
+}
+
 // compressOne compresses raw with the codec's level-1 writer and returns the
 // produced length.
 func compressOne(codec string, raw, target []byte) (int, error) {
+	if codec == "zstd" {
+		// directionsFor gates every caller; reaching here is a bug.
+		return 0, fmt.Errorf("zstd is decode-only")
+	}
 	buf := bytes.NewBuffer(target[:0])
 	switch codec {
 	case "flate":
@@ -134,6 +168,17 @@ func decompressOne(codec string, blob, target []byte) (int, error) {
 		}
 		return len(out), nil
 	}
+	if codec == "zstd" {
+		dec, err := zstdDecoder()
+		if err != nil {
+			return 0, err
+		}
+		out, err := dec.DecodeAll(blob, target[:0])
+		if err != nil {
+			return 0, err
+		}
+		return len(out), nil
+	}
 	var r io.ReadCloser
 	var err error
 	switch codec {
@@ -156,17 +201,21 @@ func decompressOne(codec string, blob, target []byte) (int, error) {
 }
 
 // checkCell round-trips the raw corpus and decodes the reference blob.
+// Decode-only codecs (zstd) skip the round trip: the reference decode is
+// the whole check.
 func checkCell(c *kase, codec string, target, decoded []byte) error {
-	n, err := compressOne(codec, c.raw, target)
-	if err != nil {
-		return fmt.Errorf("compress %s/%s: %w", codec, c.shape, err)
-	}
-	back, err := decompressOne(codec, target[:n], decoded)
-	if err != nil {
-		return fmt.Errorf("round trip %s/%s: %w", codec, c.shape, err)
-	}
-	if back != c.size || !bytes.Equal(decoded[:back], c.raw) {
-		return fmt.Errorf("round trip mismatch %s/%s", codec, c.shape)
+	if len(directionsFor(codec)) == 2 {
+		n, err := compressOne(codec, c.raw, target)
+		if err != nil {
+			return fmt.Errorf("compress %s/%s: %w", codec, c.shape, err)
+		}
+		back, err := decompressOne(codec, target[:n], decoded)
+		if err != nil {
+			return fmt.Errorf("round trip %s/%s: %w", codec, c.shape, err)
+		}
+		if back != c.size || !bytes.Equal(decoded[:back], c.raw) {
+			return fmt.Errorf("round trip mismatch %s/%s", codec, c.shape)
+		}
 	}
 	got, err := decompressOne(codec, c.blobs[codec], decoded)
 	if err != nil {
@@ -186,9 +235,10 @@ func selected(o *options, codec, direction, shape string, size int) bool {
 	return o.filter == "" || strings.Contains(caseID(codec, direction, shape, size), o.filter)
 }
 
-// anyRow reports whether any row of this codec (either direction) is selected.
+// anyRow reports whether any row of this codec (any direction the codec
+// carries) is selected.
 func anyRow(o *options, codec, shape string, size int) bool {
-	for _, direction := range directions {
+	for _, direction := range directionsFor(codec) {
 		if selected(o, codec, direction, shape, size) {
 			return true
 		}
@@ -299,7 +349,7 @@ func runMeasure(o *options) {
 			cases += counted
 			for sample := 0; sample < o.samples; sample++ {
 				for _, codec := range codecs {
-					for _, direction := range directions {
+					for _, direction := range directionsFor(codec) {
 						if !selected(o, codec, direction, shape, size) {
 							continue
 						}

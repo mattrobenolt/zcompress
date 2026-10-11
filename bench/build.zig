@@ -20,7 +20,7 @@ pub fn build(b: *Build) void {
         "bench-vendor",
         "Materialize the pinned bench competitor sources (zig-out/bench-src/)",
     );
-    inline for (.{ "libdeflate", "zlibng", "googlesnappy" }) |name| {
+    inline for (.{ "libdeflate", "zlibng", "googlesnappy", "zstd" }) |name| {
         if (b.lazyDependency(name, .{})) |dep| {
             const install = b.addInstallDirectory(.{
                 .source_dir = dep.path("."),

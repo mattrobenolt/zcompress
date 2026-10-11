@@ -24,6 +24,11 @@
             .hash = "N-V-__8AABSJMwBOXGG9fyC5Qh-ckIPIwe9UxsdUveKkzezo",
             .lazy = true,
         },
+        .zstd = .{
+            .url = "https://github.com/facebook/zstd/archive/refs/tags/v1.5.7.tar.gz",
+            .hash = "N-V-__8AAPZ7fwBg4JoCzM_0o2A8wxH2hsUUeiU1iuZv53L5",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

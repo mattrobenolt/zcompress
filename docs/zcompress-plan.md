@@ -244,8 +244,14 @@ fleet run committed: `docs/results/m3-fleet-20261010.md` (run id
 
 M4 — zstd decoder. huff0, fse, block, and frame layers. A decode-side fleet
 run against zstd C, klauspost, and std.compress.zstd.
-Acceptance: zstd CLI conformance green; amplification-limit tests green; a
-fleet run committed.
+Acceptance: met — the CLI-verified golden corpus (68 fixtures, all decoded
+by the pinned zstd v1.5.7), the fuzz targets (12, the T-register corners
+pinned), and the fleet run committed:
+docs/results/m4-fleet-20261011.md (run id 20261011T014512Z-m4, seven
+targets, six arms, n=5; the zstd decoder beats the C reference on five of
+seven targets, klauspost nearly everywhere, std everywhere; the M3 snappy
+competitor-set gap closed in the same run). The Opus closing review is the
+final gate.
 
 M5 — zstd encoder, fast level. M6 — brotli, decoder first (RFC 7932 —
 vendor it at M6; the google/brotli C reference is the oracle lane and the

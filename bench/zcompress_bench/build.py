@@ -27,19 +27,22 @@ from ec2bench.config import Config
 from ec2bench.parallel import Outcome, parallel, progress
 from ec2bench.runs import git
 
-ARMS = ("zc", "klauspost", "libdeflate", "zlibng", "googlesnappy")
+ARMS = ("zc", "klauspost", "libdeflate", "zlibng", "googlesnappy", "zstd-c")
 # The competitor version labels (docs/research/containers-notes.md names the
-# sources; google/snappy is docs/zcompress-plan.md's pinned snappy
-# competitor). The content pins — the release-tarball url+hash — live in
-# bench/build.zig.zon; `zig build bench-vendor` materializes the fetched trees.
+# flate-family sources; google/snappy is docs/zcompress-plan.md's pinned
+# snappy competitor; zstd v1.5.7 is the zstd notes' pinned tag,
+# docs/research/zstd-notes.md §6.1). The content pins — the release-tarball
+# url+hash — live in bench/build.zig.zon; `zig build bench-vendor`
+# materializes the fetched trees.
 LIBDEFLATE_VERSION = "v1.26"
 ZLIBNG_VERSION = "2.3.3"
 SNAPPY_VERSION = "1.3.1"
+ZSTD_C_VERSION = "v1.5.7"
 # The local research checkout (~/code/klauspost-compress), pinned in go.mod.
 KLAUSPOST_VERSION = "v1.18.1-0.20250402062133-8df4d013ff17"
 # The C-arm sources, as `zig build bench-vendor` installs them (the bench
 # tool's own build root: bench/build.zig, bench/build.zig.zon).
-VENDOR_ARMS = ("libdeflate", "zlibng", "googlesnappy")
+VENDOR_ARMS = ("libdeflate", "zlibng", "googlesnappy", "zstd")
 VENDOR_DIR = Path("bench") / "zig-out" / "bench-src"
 
 GO_ARCHES = {"x86_64": "amd64", "arm64": "arm64"}
@@ -469,6 +472,85 @@ def build_googlesnappy(config: Config, source: Vendor, target: str, zig_version:
     )
 
 
+def build_zstdc(config: Config, source: Vendor, target: str, zig_version: str) -> Build:
+    """The zstd-c arm: facebook/zstd's cmake (build/cmake) under a zig-cc
+    wrapper, the zlib-ng pattern; the driver links the static libzstd."""
+    settings = config.targets[target]
+    driver = config.root / "bench" / "drivers" / "c"
+    driver_hash = hash_paths([driver / "cbench.h", driver / "bench_zstd.c"])
+    key_data = [
+        "zstd-c",
+        driver_hash,
+        settings["zig_target"],
+        settings["zig_cpu"],
+        zig_version,
+        ZSTD_C_VERSION,
+        source.tree_hash,
+        "v1",
+    ]
+
+    def install(temporary: Path) -> None:
+        # cmake wants a single compiler path: wrap the zig cc cross flags.
+        wrapper = temporary / "zig-cc"
+        wrapper.write_text(
+            '#!/bin/sh\nexec zig cc {} "$@"\n'.format(" ".join(target_flags(settings)))
+        )
+        wrapper.chmod(0o755)
+        library = temporary / "zstd-build"
+        checked(
+            [
+                "cmake",
+                "-S",
+                str(source.path / "build" / "cmake"),
+                "-B",
+                str(library),
+                "-DCMAKE_SYSTEM_NAME=Linux",
+                "-DCMAKE_SYSTEM_PROCESSOR="
+                + ("aarch64" if settings["arch"] == "arm64" else "x86_64"),
+                f"-DCMAKE_C_COMPILER={wrapper}",
+                "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
+                "-DZSTD_BUILD_PROGRAMS=OFF",
+                "-DZSTD_BUILD_TESTS=OFF",
+                "-DZSTD_BUILD_SHARED=OFF",
+                "-DZSTD_BUILD_STATIC=ON",
+                "-DZSTD_MULTITHREAD_SUPPORT=OFF",
+                "-DCMAKE_BUILD_TYPE=Release",
+            ],
+            config.root,
+            temporary / "cmake-configure.log",
+        )
+        checked(
+            ["cmake", "--build", str(library), "-j", str(os.cpu_count() or 1)],
+            config.root,
+            temporary / "cmake-build.log",
+        )
+        archives = sorted(library.glob("lib/libzstd*.a"))
+        if not archives:
+            raise RuntimeError(f"zstd cmake built no static library under {library}/lib")
+        (temporary / "bin").mkdir()
+        checked(
+            [
+                "zig",
+                "cc",
+                *cc_flags(settings),
+                f'-DCBENCH_TARGET="{settings["zig_target"]}"',
+                f'-DCBENCH_CPU="{settings["zig_cpu"]}"',
+                f'-DZIG_VERSION="{zig_version}"',
+                f'-DCOMPETITOR_VERSION="{ZSTD_C_VERSION}"',
+                f"-I{source.path}/lib",
+                str(driver / "bench_zstd.c"),
+                str(archives[0]),
+                "-o",
+                str(temporary / "bin" / "bench-zstd-c"),
+            ],
+            config.root,
+            temporary / "build.log",
+        )
+
+    prefix = finalize(config, key_data, install)
+    return Build("zstd-c", target, prefix, prefix / "bin" / "bench-zstd-c", sha_key(key_data))
+
+
 def build_all(
     config: Config, source: Source, targets: list[str]
 ) -> tuple[dict[str, Outcome[Build]], dict[str, Vendor]]:
@@ -488,8 +570,10 @@ def build_all(
                 return build_libdeflate(config, vendors["libdeflate"], target, zig_version)
             case "zlibng":
                 return build_zlibng(config, vendors["zlibng"], target, zig_version)
-            case _:
+            case "googlesnappy":
                 return build_googlesnappy(config, vendors["googlesnappy"], target, zig_version)
+            case _:
+                return build_zstdc(config, vendors["zstd"], target, zig_version)
 
     return parallel(pairs, build, workers=os.cpu_count() or 1), vendors
 
@@ -502,6 +586,7 @@ def arm_revisions(source: Source) -> dict[str, str]:
         "libdeflate": LIBDEFLATE_VERSION,
         "zlibng": ZLIBNG_VERSION,
         "googlesnappy": SNAPPY_VERSION,
+        "zstd-c": ZSTD_C_VERSION,
     }
 
 
@@ -525,6 +610,7 @@ def provenance(
                 "version": SNAPPY_VERSION,
                 "tree_sha256": vendors["googlesnappy"].tree_hash,
             },
+            "zstd": {"version": ZSTD_C_VERSION, "tree_sha256": vendors["zstd"].tree_hash},
         },
         "builds": {
             key: {
