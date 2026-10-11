@@ -49,7 +49,7 @@ fn decode(arena: Allocator, in: *Io.Reader, out: *Io.Writer) !void {
     // window drives (`Reader.Buffer(window_len)`), and no allocator appears
     // anywhere in the codec itself.
     const buffer = try arena.create(zstd.Reader.DefaultBuffer);
-    defer arena.free(buffer);
+    defer arena.destroy(buffer);
     _ = try zstd.Reader.streamAll(zstd.Reader.default_window_len, in, out, buffer);
 }
 
