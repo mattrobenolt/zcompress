@@ -1424,6 +1424,46 @@ test "Reader: a contiguous request past the window fails closed" {
     try testing.expectError(error.ReadFailed, r.reader.peek(1));
 }
 
+test "Reader: the frame total runs past 2^32 without wrapping" {
+    // The M4 closing review's blocker: the frame's running decoded total was
+    // usize, so a hostile RLE-only frame (4 input bytes per 128 KiB block)
+    // drove the total past 2^32 on the streaming path — a panic in
+    // Debug/ReleaseSafe and UB in ReleaseFast on every 32-bit target, which
+    // `just check-baseline` covers. The state's total is u64 now (`§3.1.1`
+    // puts no usize bound on a frame's output; the probe decoded 4.29 GB in
+    // under a second). Here: 32,770 RLE blocks -> 4,295,163,904 bytes —
+    // 196,608 past 2^32 — decoded through the walk into a discarding
+    // consumer, the input consumed exactly, no error.
+    // Frame: magic + descriptor (no FCS, no checksum) + Window_Descriptor
+    // 0x38 (windowLog 17 = 128 KiB, so Block_Size 131072 is in bounds).
+    const block_count = 32_770;
+    const block_size = 128 * 1024;
+    var frame_buf: [4 + 1 + 1 + 4 * block_count]u8 = undefined;
+    fastmem.copy(u8, frame_buf[0..4], &[_]u8{ 0x28, 0xB5, 0x2F, 0xFD });
+    frame_buf[4] = 0x00; // Frame_Header_Descriptor: every flag clear.
+    frame_buf[5] = 0x38; // Window_Descriptor: exponent 7, mantissa 0.
+    var at: usize = 6;
+    var block_index: usize = 0;
+    while (block_index < block_count) : (block_index += 1) {
+        const last: u24 = if (block_index + 1 == block_count) 1 else 0;
+        const header: u24 = last | (1 << 1) | (@as(u24, block_size) << 3);
+        frame_buf[at] = @truncate(header);
+        frame_buf[at + 1] = @truncate(header >> 8);
+        frame_buf[at + 2] = @truncate(header >> 16);
+        frame_buf[at + 3] = 0x5A;
+        at += 4;
+    }
+    try testing.expectEqual(@as(usize, 6 + 4 * block_count), at);
+
+    var fixed_in: Io.Reader = .fixed(&frame_buf);
+    var window: Reader.Buffer(128 * 1024) = undefined;
+    var sink: Io.Writer.Discarding = .init(&.{});
+    const served = try Reader.streamAll(128 * 1024, &fixed_in, &sink.writer, &window);
+    const expected: u64 = block_count * block_size;
+    try testing.expectEqual(expected, @as(u64, served));
+    try testing.expectEqual(@as(usize, frame_buf.len), fixed_in.seek);
+}
+
 test "Reader: an over-the-end request still checks the trailer" {
     // The rebase path, the M3 B1 shape (`src/internal/README.md`, "A
     // wrapper's rebase routes the inner end through the same ending as

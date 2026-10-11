@@ -466,8 +466,14 @@ pub const State = struct {
     checksum: xxh64.State = .{},
     /// The frame's decoded length so far: the block layer's `decoded_len` on
     /// the one-shot's contiguous path, and the frame's running total
-    /// (Frame_Content_Size's bound, `§3.1.1.1.4`) everywhere.
-    decoded_len: usize = 0,
+    /// (Frame_Content_Size's bound, `§3.1.1.1.4`) everywhere. u64, not usize:
+    /// a frame's output has no usize bound (a 131 KB RLE stream yields
+    /// 4 GiB+), so the streaming total must not wrap on the 32-bit targets
+    /// — the M4 closing review's blocker: a hostile RLE frame drove the
+    /// total past 2^32 through the reader, a Debug/ReleaseSafe panic and
+    /// ReleaseFast UB on x86-linux/arm-linux/wasm32 (hostile input gets
+    /// error returns, never a crash).
+    decoded_len: u64 = 0,
 
     /// A fresh state for one frame.
     pub fn init(header: Header) State {
@@ -487,7 +493,10 @@ pub const State = struct {
         const section = try block.decode(
             source,
             target,
-            state.decoded_len,
+            // The one-shot's target is the caller-bounded history, so the
+            // running total is bounded by target.len: the usize the block
+            // layer's history accounting takes.
+            @intCast(state.decoded_len),
             state.header.window_size,
             &state.literals,
             &state.sequences,
@@ -495,7 +504,7 @@ pub const State = struct {
         // The output slice is taken with the pre-call `decoded_len`: the
         // bytes this block just wrote, which `recordBlock` then folds and
         // counts.
-        const output = target[state.decoded_len..][0..section.bytes_written];
+        const output = target[@intCast(state.decoded_len)..][0..section.bytes_written];
         try state.recordBlock(output);
         return section;
     }
@@ -571,11 +580,13 @@ fn decodeFrame(bytes: []const u8, target: []u8, progress: *usize) !usize {
             // A post-write check — Frame_Content_Size's running bound — fails
             // after the block landed, so the sentinel's floor is the frame's
             // decoded length, not the last successful block's.
-            progress.* = state.decoded_len;
+            // The walk's target bounds the frame's output, so the u64
+            // total always fits the usize this test helper tracks.
+            progress.* = @intCast(state.decoded_len);
             return err;
         };
         cursor += section.bytes_consumed;
-        progress.* = state.decoded_len;
+        progress.* = @intCast(state.decoded_len);
         if (section.last_block) break;
     }
     try state.checkContentSize();
@@ -587,7 +598,8 @@ fn decodeFrame(bytes: []const u8, target: []u8, progress: *usize) !usize {
         cursor += checksum_len;
     }
     try testing.expectEqual(bytes.len, cursor);
-    return state.decoded_len;
+    // The helper's target bounds the frame's output, so the u64 total fits.
+    return @intCast(state.decoded_len);
 }
 
 /// Decode a fixture frame and check its output, with the sentinel overrun

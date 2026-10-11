@@ -167,7 +167,9 @@ pub fn decompress(source: []const u8, target: []u8) DecompressError!usize {
         if (source.len - cursor < frame.checksum_len) return error.Truncated;
         try state.verifyTrailer(source[cursor..][0..frame.checksum_len]);
     }
-    return state.decoded_len;
+    // The one-shot's target bounds the frame's output, so the total is
+    // a usize here (the state's u64 never exceeds target.len on this path).
+    return @intCast(state.decoded_len);
 }
 
 /// One skippable frame's length from its front (`§3.1.2`): the 4-byte magic,
